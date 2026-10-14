@@ -125,7 +125,11 @@ env = Environment(
     "PYTHONPATH": os.pathsep.join(submodule_python_paths),
     "ACADOS_SOURCE_DIR": acados.DIR,
     "ACADOS_PYTHON_INTERFACE_PATH": acados.TEMPLATE_DIR,
-    "TERA_PATH": acados.TERA_PATH
+    "TERA_PATH": acados.TERA_PATH,
+    # AGX Orin 适配: 编译期 C++ 工具 (params/acados) 需要 HOME 定位 ~/.comma;
+    # 否则 Path::comma_home() 拼出 /.comma, errno=13 编译失败
+    "HOME": os.environ.get("HOME", ""),
+    "PARAMS_ROOT": os.environ.get("PARAMS_ROOT", os.path.join(os.environ.get("HOME", ""), ".comma/params")),
   },
   CCFLAGS=[
     "-g",
