@@ -1,0 +1,58 @@
+diff --git a/board/health.h b/board/health.h
+old mode 100644
+new mode 100755
+index 9040edf5..74d822dc
+--- a/board/health.h
++++ b/board/health.h
+@@ -1,6 +1,6 @@
+ // When changing these structs, python/__init__.py needs to be kept up to date!
+ 
+-#define HEALTH_PACKET_VERSION 17
++#define HEALTH_PACKET_VERSION 16
+ struct __attribute__((packed)) health_t {
+   uint32_t uptime_pkt;
+   uint32_t voltage_pkt;
+@@ -23,7 +23,8 @@ struct __attribute__((packed)) health_t {
+   float interrupt_load_pkt;
+   uint8_t fan_power;
+   uint8_t safety_rx_checks_invalid_pkt;
+-  uint16_t spi_error_count_pkt;
++  uint16_t spi_checksum_error_count_pkt;
++  uint8_t fan_stall_count;
+   uint16_t sbu1_voltage_mV;
+   uint16_t sbu2_voltage_mV;
+   uint8_t som_reset_triggered;
+diff --git a/python/__init__.py b/python/__init__.py
+old mode 100644
+new mode 100755
+index 75ae82f0..39d0baec
+--- a/python/__init__.py
++++ b/python/__init__.py
+@@ -129,9 +129,9 @@ class Panda:
+   HW_TYPE_BODY = b'\x0b'
+ 
+   CAN_PACKET_VERSION = 4
+-  HEALTH_PACKET_VERSION = 17
++  HEALTH_PACKET_VERSION = 16
+   CAN_HEALTH_PACKET_VERSION = 5
+-  HEALTH_STRUCT = struct.Struct("<IIIIIIIIBBBBBHBBBHfBBHHHB")
++  HEALTH_STRUCT = struct.Struct("<IIIIIIIIBBBBBHBBBHfBBHBHHB")
+   CAN_HEALTH_STRUCT = struct.Struct("<BIBBBBBBBBIIIIIIIHHBBBIIII")
+ 
+   F4_DEVICES = [HW_TYPE_WHITE_PANDA, HW_TYPE_GREY_PANDA, HW_TYPE_BLACK_PANDA, HW_TYPE_UNO, HW_TYPE_DOS]
+@@ -578,10 +578,11 @@ class Panda:
+       "interrupt_load": a[18],
+       "fan_power": a[19],
+       "safety_rx_checks_invalid": a[20],
+-      "spi_error_count": a[21],
+-      "sbu1_voltage_mV": a[22],
+-      "sbu2_voltage_mV": a[23],
+-      "som_reset_triggered": a[24],
++      "spi_checksum_error_count": a[21],
++      "fan_stall_count": a[22],
++      "sbu1_voltage_mV": a[23],
++      "sbu2_voltage_mV": a[24],
++      "som_reset_triggered": a[25],
+     }
+ 
+   @ensure_can_health_packet_version
