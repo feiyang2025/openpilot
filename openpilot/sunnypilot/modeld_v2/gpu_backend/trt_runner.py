@@ -20,18 +20,44 @@ _TRT_DTYPE_TO_NP = {
   3: np.int32,
   4: np.bool_,
   5: np.uint8,
-  7: getattr(np, "bfloat16", None),
+  6: None,   # fp8: TensorRT-specific, no numpy equivalent
 }
 
 
+def _bfloat16_dtype():
+  """numpy has no bfloat16; ml_dtypes provides one.
+
+  Returns None when neither is available. Callers must treat that as an error
+  rather than falling back to float16 - the two have different exponents, so the
+  reinterpretation would produce wrong numbers with no failure anywhere.
+  """
+  dtype = getattr(np, "bfloat16", None)
+  if dtype is not None:
+    return np.dtype(dtype)
+  try:
+    import ml_dtypes
+    return np.dtype(ml_dtypes.bfloat16)
+  except Exception:
+    return None
+
+
 def _np_dtype(trt_dtype: int) -> np.dtype:
-  if trt_dtype not in _TRT_DTYPE_TO_NP:
-    raise RuntimeError(f"unsupported TensorRT dtype {trt_dtype}")
+  if trt_dtype not in _TRT_DTYPE_TO_NP and trt_dtype != 7:
+    raise RuntimeError(f"unsupported TensorRT dtype {trt_dtype} ({_TRT_DTYPE_NAMES.get(trt_dtype, 'unknown')})")
+  if trt_dtype == 7:
+    dtype = _bfloat16_dtype()
+    if dtype is None:
+      raise RuntimeError(
+        f"engine declares bfloat16 but neither numpy {np.__version__} nor ml_dtypes provides it; "
+        f"reading it as float16 would reinterpret the buffer and produce wrong numbers silently. "
+        f"Install ml_dtypes, or rebuild the engine for fp16."
+      )
+    return dtype
   dtype = _TRT_DTYPE_TO_NP[trt_dtype]
   if dtype is None:
     raise RuntimeError(
-      f"engine declares {_TRT_DTYPE_NAMES[trt_dtype]} but numpy {np.__version__} has no bfloat16; "
-      f"the output would be reinterpreted as a different type"
+      f"engine declares {_TRT_DTYPE_NAMES[trt_dtype]}, which has no numpy equivalent; "
+      f"cast it in the ONNX graph before building the plan"
     )
   return np.dtype(dtype)
 
@@ -67,9 +93,13 @@ class TrtRunner:
     self.engine_path = engine_path
     api = trt_c_api or os.getenv("TRT_C_API_LIBRARY")
     if api is None:
-      api = str(Path(__file__).resolve().parents[3] / "selfdrive" / "modeld" / "runners" / "trt_c_api.so")
+      api = str(Path(__file__).resolve().parents[3] / "selfdrive" / "modeld" / "transforms" / "libtrt_c_api.so")
     if not Path(api).exists():
-      raise RuntimeError(f"trt_c_api.so not found at {api}; build it on-device or set TRT_C_API_LIBRARY")
+      raise RuntimeError(
+        f"libtrt_c_api.so not found at {api}; build it on-device with "
+        f"`nvcc -arch=sm_87 -shared -Xcompiler -fPIC -O2 -o libtrt_c_api.so trt_c_api.cc -lnvinfer` "
+        f"or set TRT_C_API_LIBRARY"
+      )
     self._cuda = _CudaDriver()
     _check(self._cuda.cuInit(0))
     ctx = ctypes.c_ulonglong()
@@ -93,21 +123,28 @@ class TrtRunner:
     self._lib.trt_engine_input_name.restype = ctypes.c_char_p
     self._lib.trt_engine_output_name.argtypes = [ctypes.c_void_p, ctypes.c_int]
     self._lib.trt_engine_output_name.restype = ctypes.c_char_p
-    self._lib.trt_engine_input_dims.argtypes = [
-      ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(ctypes.c_int),
-    ]
-    self._lib.trt_engine_input_dims.restype = ctypes.c_int
-    self._lib.trt_engine_output_shape.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int64)]
-    self._lib.trt_engine_output_shape.restype = ctypes.c_int
+    self._lib.trt_engine_input_dtype.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    self._lib.trt_engine_input_dtype.restype = ctypes.c_int
     self._lib.trt_engine_output_dtype.argtypes = [ctypes.c_void_p, ctypes.c_int]
     self._lib.trt_engine_output_dtype.restype = ctypes.c_int
+    self._lib.trt_engine_input_rank.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    self._lib.trt_engine_input_rank.restype = ctypes.c_int
+    self._lib.trt_engine_input_dim.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    self._lib.trt_engine_input_dim.restype = ctypes.c_int
+    self._lib.trt_engine_output_shape.argtypes = [
+      ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int64), ctypes.c_int,
+    ]
+    self._lib.trt_engine_output_shape.restype = ctypes.c_int
 
     with open(engine_path, "rb") as f:
       data = f.read()
     buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
     self._handle = self._lib.trt_engine_create(buf, len(data))
     if not self._handle:
-      raise RuntimeError(f"trt_engine_create failed for {engine_path}")
+      raise RuntimeError(
+        f"trt_engine_create failed for {engine_path}: a plan built by a different "
+        f"TensorRT version or a different GPU will not deserialize. Rebuild it here with trtexec."
+      )
 
     self.num_inputs = self._lib.trt_engine_num_inputs(self._handle)
     self.num_outputs = self._lib.trt_engine_num_outputs(self._handle)
@@ -116,14 +153,18 @@ class TrtRunner:
     for i in range(self.num_inputs):
       name = self._lib.trt_engine_input_name(self._handle, i).decode()
       self.input_names.append(name)
-      ndim = ctypes.c_int()
-      dims = (ctypes.c_int64 * 8)()
-      dt = ctypes.c_int()
-      self._lib.trt_engine_input_dims(self._handle, i, ctypes.byref(ndim), dims, ctypes.byref(dt))
-      self.input_shapes.append(tuple(dims[:ndim.value]))
+      rank = self._lib.trt_engine_input_rank(self._handle, i)
+      if rank < 0:
+        raise RuntimeError(f"cannot read the rank of input {name!r}")
+      self.input_shapes.append(tuple(self._lib.trt_engine_input_dim(self._handle, i, d) for d in range(rank)))
+
     self.output_names = [self._lib.trt_engine_output_name(self._handle, i).decode() for i in range(self.num_outputs)]
     dims_out = (ctypes.c_int64 * 8)()
-    nd = self._lib.trt_engine_output_shape(self._handle, 0, dims_out)
+    nd = self._lib.trt_engine_output_shape(self._handle, 0, dims_out, len(dims_out))
+    if nd < 0:
+      raise RuntimeError("cannot read the first output's shape")
+    if nd > len(dims_out):
+      raise RuntimeError(f"first output has rank {nd}, more than this build can hold ({len(dims_out)})")
     self.output_shape = tuple(dims_out[:nd])
     dtype_val = self._lib.trt_engine_output_dtype(self._handle, 0)
     self.output_dtype_np = _np_dtype(dtype_val)
@@ -135,10 +176,9 @@ class TrtRunner:
     self.input_dtypes: dict[str, np.dtype] = {}
     self.input_nbytes: dict[str, int] = {}
     for i, name in enumerate(self.input_names):
-      dt = ctypes.c_int()
-      self._lib.trt_engine_input_dims(self._handle, i, ctypes.byref(ndim), dims, ctypes.byref(dt))
-      self.input_dtypes[name] = _np_dtype(dt.value)
-      self.input_nbytes[name] = int(np.prod(self.input_shapes[i])) * self.input_dtypes[name].itemsize
+      dtype = _np_dtype(self._lib.trt_engine_input_dtype(self._handle, i))
+      self.input_dtypes[name] = dtype
+      self.input_nbytes[name] = int(np.prod(self.input_shapes[i])) * dtype.itemsize
 
     self.stream = ctypes.c_ulonglong()
     _check(self._cuda.cuStreamCreate(ctypes.byref(self.stream), 0))
