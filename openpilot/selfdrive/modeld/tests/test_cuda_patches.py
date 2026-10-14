@@ -134,6 +134,10 @@ class TestCameraPatchGating:
   def test_missing_v4l2_module_leaves_the_original(self, monkeypatch):
     monkeypatch.setenv("USE_V4L2_CAMERA", "1")
     monkeypatch.setattr(cuda_patches.sys, "platform", "linux")
+    # Force the import to fail deterministically. Relying on the module being
+    # absent made this test depend on the environment: once the branch ships
+    # v4l2_dmabuf_camera.py the import succeeds and the test silently inverted.
+    monkeypatch.setitem(sys.modules, "openpilot.system.camerad.webcam.v4l2_dmabuf_camera", None)
     mod = _fresh_module("fake_cam_missing")
     original = mod.Camera = object
     result = cuda_patches.patch_camerad_camera(mod)

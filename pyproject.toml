@@ -19,12 +19,10 @@ dependencies = [
   "sounddevice",  # micd + soundd
   "requests",     # many one-off uses
   "tqdm",         # cars (fw_versions.py) on start + many one-off uses
-
   # core
   "scons==4.10.1",  # 4.11 removed the qt3 tool still used to build Cabana
   "pycapnp==2.1.0",  # 2.2 introduces a memory leak due to cyclic references
   "numpy >=2.0",
-
   # vendored native dependencies
   "comma-deps-capnproto",
   "comma-deps-acados",
@@ -34,14 +32,11 @@ dependencies = [
   "comma-deps-json11",
   "comma-deps-git-lfs",
   "comma-deps-gcc-arm-none-eabi",
-
   # athena
   "PyJWT[crypto]",
   "websocket_client",
-
   # joystickd
   "inputs",
-
   # these should be removed
   "pyzmq",
   "shapely>=2.0",  # carrot navigation path resampling
@@ -50,12 +45,11 @@ dependencies = [
   "setproctitle",
   "jeepney",
   "zstandard",  # this can go once we're on Python 3.14+
-
   # ui
   "comma-deps-raylib",
-
   # xiaoge ONNX BSD/Lane detection (opencv-python-headless, not opencv-python, for headless inference)
   "opencv-python-headless>=4.10.0",
+  "qrcode>=8.2",
 ]
 
 [project.optional-dependencies]
@@ -143,6 +137,7 @@ lint.ignore = [
   "B027",
   "UP007",  # this doesn't play nice with raylib atm
 ]
+lint.flake8-implicit-str-concat.allow-multiline = false
 line-length = 160
 exclude = [
   "openpilot/cereal",
@@ -150,7 +145,6 @@ exclude = [
   "*.ipynb",
   "generated",
 ]
-lint.flake8-implicit-str-concat.allow-multiline = false
 
 # Files vendored from CarrotPilot and kept close to upstream so they can be re-synced.
 # The whole `sunnypilot/carrot/server` tree came from `selfdrive/carrot/server`; the codes
