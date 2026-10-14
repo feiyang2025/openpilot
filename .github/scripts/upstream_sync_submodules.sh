@@ -7,29 +7,49 @@
 set -euo pipefail
 
 OUTPUT_BRANCH="${OUTPUT_BRANCH:?}"
+# Mirror the branches .gitmodules declares. Note opendbc tracks tn-c3, not
+# master-c3 - reading it from .gitmodules rather than hardcoding it keeps this
+# correct when upstream renames a line.
 SUBMODULE_FORK="${SUBMODULE_FORK:-https://github.com/mouxangithub}"
 
-declare -A BRANCHES=(
-  [opendbc_repo]="master-c3"
-  [panda]="master-c3"
+declare -A REPO_NAMES=(
+  [opendbc_repo]="opendbc"
+  [panda]="panda"
+  [jetlink_repo]="jetlink"
 )
 
+declared_branch() {
+  # .gitmodules stanza for a submodule path -> its declared branch, or empty.
+  awk -v want="path = $1" '
+    $0 ~ want { inblock = 1; next }
+    inblock && /^\[/ { inblock = 0 }
+    inblock && /branch *= */ {
+      gsub(/^[ \t]*branch *= */, "")
+      gsub(/[\r\n]/, "")
+      print
+      exit
+    }
+  ' .gitmodules
+}
+
 changed=0
-for path in "${!BRANCHES[@]}"; do
-  branch="${BRANCHES[$path]}"
-  if [ ! -f ".gitmodules" ]; then
-    echo "::warning::no .gitmodules, skipping"
-    exit 0
-  fi
+for path in "${!REPO_NAMES[@]}"; do
+  [ -f ".gitmodules" ] || { echo "::warning::no .gitmodules, skipping"; break; }
   if ! grep -q "path = ${path}$" .gitmodules; then
     echo "::notice::${path} is not a submodule in .gitmodules, skipping"
     continue
   fi
 
-  url="${SUBMODULE_FORK}/${path/opendbc_repo/opendbc}.git"
+  repo="${REPO_NAMES[$path]}"
+  branch="$(declared_branch "$path")"
+  if [ -z "$branch" ]; then
+    echo "::warning::${path} declares no branch in .gitmodules; leaving it untouched"
+    continue
+  fi
+
+  url="${SUBMODULE_FORK}/${repo}.git"
   echo "::group::${path} -> ${url} ${branch}"
 
-  git submodule sync -- "${path}" >/dev/null 2>&1 || true
   git config "submodule.${path}.url" "${url}"
 
   if git ls-remote --exit-code --heads "${url}" "${branch}" >/dev/null 2>&1; then
