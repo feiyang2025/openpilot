@@ -1,0 +1,37 @@
+A validation run failed after an upstream merge. The failure log tail is below.
+
+## Hard rules
+
+1. **Reproduce before you fix.** Re-run the failing command yourself and confirm
+   you see the same failure. Do not fix a failure you have not seen.
+2. **Fix the cause, not the symptom.** Disabling a test, adding a bare `except`,
+   widening an assert, or pinning a version to make CI green is not a fix. If you
+   conclude the test itself is wrong, say so explicitly and stop.
+3. **Never delete or skip a test** to get a green run.
+4. **If you cannot fix it, stop and say why.** The workflow will report the
+   failure to a human. An honest "here is the failure and here is why I cannot
+   fix it safely" is a success for this task.
+
+## Fork-specific things CI will not tell you
+
+- C3 / tici / DOS compatibility must survive (see the merge prompt for the full
+  list). A test that only covers `HardwarePc()` proves nothing about tici.
+- The CUDA backend must keep its fallbacks: `OPENPILOT_CUDA_PATCH=0`,
+  `DISABLE_CUDA_BACKEND=1`, and the drop back to stock tinygrad when no engine is
+  present.
+- `cuda_patches.py` runs in every python process on the device. If it can raise,
+  it must be guarded — a patch that breaks pytest also breaks the car.
+
+## What to report
+
+- the exact command you ran and its real output
+- the root cause, with `file:line`
+- your change, with `file:line`
+- anything you changed but could not verify
+- anything you did NOT change that you think is wrong
+
+## Failure log
+
+```
+$CONTEXT
+```
