@@ -166,6 +166,40 @@ def _big_combo() -> ModelProfile:
   )
 
 
+def _tgc() -> ModelProfile:
+  # The big model sunnypilot currently publishes as `big_driving_supercombo.onnx`
+  # is TGC-shaped, not the older BigCombo: desire_pulse is (1, 33, 8),
+  # features_buffer is (1, 32, 32, 512) and the output is 18452 wide. Same input
+  # names and the same merged single-engine layout, so it reuses the BigCombo
+  # code path; only the temporal geometry differs and that is read from metadata.
+  engine_dir = MODELS_ROOT / "TGC"
+  merged_engine = _engine(engine_dir, "driving_supercombo_fp16.plan", "driving_supercombo.plan")
+  if merged_engine is None:
+    raise MetadataError(f"TGC: missing merged engine in {engine_dir}")
+
+  metadata_path = engine_dir / "driving_supercombo_metadata.pkl"
+  metadata = _load_metadata(metadata_path)
+  slices = _output_slices(metadata, metadata_path)
+  vision, policy = _split_slices(slices)
+
+  shapes = metadata.get("input_shapes") or {}
+  if not shapes:
+    raise MetadataError(f"{metadata_path} has no input_shapes; cannot size the scalar inputs")
+
+  return ModelProfile(
+    name="TGC",
+    mode="merged",
+    engine_dir=str(engine_dir),
+    merged_engine=merged_engine,
+    vision_input_names=["img", "big_img"],
+    input_shapes={**VISION_ENGINE_SHAPES, **shapes},
+    vision_slices=vision,
+    policy_slices=policy,
+    temporal=_temporal_from_metadata(metadata, metadata_path, "features_buffer", "desire_pulse"),
+    scalar_input_shapes=dict(shapes),
+  )
+
+
 def _build(name: str, factory) -> ModelProfile | None:
   try:
     return factory()
@@ -176,8 +210,12 @@ def _build(name: str, factory) -> ModelProfile | None:
 
 
 REGISTRY: dict[str, ModelProfile | None] = {
+  # Order is the default preference: the split FiletOFish is the small model and
+  # stays the fallback target, the merged BigCombo/TGC are the big model and are
+  # only picked when asked for by name (Params/env).
   "FiletOFish": _build("FiletOFish", _filet_ofish),
   "BigCombo": _build("BigCombo", _big_combo),
+  "TGC": _build("TGC", _tgc),
 }
 
 

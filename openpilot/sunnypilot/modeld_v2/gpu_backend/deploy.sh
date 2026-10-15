@@ -64,11 +64,23 @@ for model_dir in "$MODELS"/*/; do
 done
 
 # --- 4. engines ---
+# The big model takes UINT8 images and concatenates them, which TensorRT 10.16
+# refuses to import ("Found unsupported input type of UINT8").
+# trt_fix_uint8_inputs.py rewrites those inputs to FLOAT16 and drops the Cast that
+# followed; it is a dtype edit, not a numeric one. Models without UINT8 inputs are
+# copied through untouched.
 if command -v trtexec >/dev/null 2>&1; then
   for model_dir in "$MODELS"/*/; do
     name="$(basename "$model_dir")"
     onnx="$(ls "$model_dir"/*.onnx 2>/dev/null | head -1 || true)"
     [ -n "$onnx" ] || continue
+    case "$onnx" in *.trt.onnx) ;; *)
+      trt_onnx="$model_dir/$(basename "${onnx%.onnx}").trt.onnx"
+      echo "[deploy] fixing UINT8 inputs: $(basename "$onnx")"
+      "$PY" "$MODELD/trt_fix_uint8_inputs.py" "$onnx" "$trt_onnx" || true
+      [ -f "$trt_onnx" ] && onnx="$trt_onnx"
+      ;;
+    esac
     out="$model_dir/driving_supercombo_fp16.plan"
     echo "[deploy] trtexec $name -> $(basename "$out")"
     trtexec --onnx="$onnx" --saveEngine="$out" $PRECISION --memPoolSize=workspace:4096 \
