@@ -74,7 +74,9 @@ def always_run(started: bool, params: Params, CP: car.CarParams) -> bool:
   return True
 
 def builtin_display(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return HARDWARE.has_builtin_display()
+  # PC/bench escape hatch: 本 fork 的 UI 用了 raygui(GuiTextAlignment/gui_set_font),
+  # 而 comma-deps raylib 不带 raygui → ui 无限重启。DISABLE_UI=1 让栈在无 UI 下跑。
+  return HARDWARE.has_builtin_display() and os.getenv("DISABLE_UI") is None
 
 def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started

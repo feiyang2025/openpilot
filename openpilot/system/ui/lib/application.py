@@ -870,7 +870,10 @@ class GuiApplication(GuiApplicationExt):
     # here would bypass font()'s OpFont selection and render tofu for non-Latin
     # languages at startup.
     self._active_lang_code = multilang.language
-    rl.gui_set_font(self.font(FontWeight.NORMAL))
+    # raygui 的 gui_set_font 不是 comma-deps raylib 的绑定的一部分; 缺失时用默认字体,
+    # 不能因此崩溃 (否则 ui 会无限重启)。
+    if hasattr(rl, "gui_set_font"):
+      rl.gui_set_font(self.font(FontWeight.NORMAL))
 
   def on_language_changed(self, lang_code: str):
     # Map old texture IDs → weights so we can remap stale references

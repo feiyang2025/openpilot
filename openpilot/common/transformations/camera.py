@@ -46,6 +46,63 @@ class DeviceCameraConfig:
       if not isinstance(getattr(self, cam), _NoneCameraConfig):
         yield cam, getattr(self, cam)
 
+def _read_calib_from_params(param_key, width, height, default_fl):
+  from openpilot.common.params import Params
+  import json
+  raw = Params().get(param_key)
+  if raw is None:
+    data = {"fl": default_fl, "cx": width / 2.0, "cy": height / 2.0,
+            "calibrations": {f"{width}x{height}": {"fl": default_fl, "cx": width / 2.0, "cy": height / 2.0}}}
+    try:
+      Params().put(param_key, data, block=True)
+    except Exception:
+      pass
+  else:
+    data = raw if isinstance(raw, dict) else json.loads(raw)
+  calibs = data.get("calibrations")
+  if calibs:
+    key = f"{width}x{height}"
+    entry = calibs.get(key)
+    if entry is not None:
+      return float(entry.get("fl", default_fl)), float(entry.get("cx", width / 2.0)), float(entry.get("cy", height / 2.0))
+    for cal_key, cal_entry in calibs.items():
+      try:
+        cal_w = int(cal_key.split("x")[0])
+        scale = width / cal_w
+        scaled_fl = float(cal_entry.get("fl", default_fl)) * scale
+        return scaled_fl, float(cal_entry.get("cx", width / 2.0)), float(cal_entry.get("cy", height / 2.0))
+      except (ValueError, KeyError, IndexError):
+        continue
+  fl = float(data.get("fl", default_fl))
+  return fl, float(data.get("cx", width / 2.0)), float(data.get("cy", height / 2.0))
+
+
+def _env_or(val, env_key, cast=int):
+  import os
+  # env_key 可以是单个键或键列表 (按顺序取第一个非空的): launcher 用 CAM_WIDTH/HEIGHT,
+  # 移植脚本身份用 ROAD_/WIDE_CAM_WIDTH —— 名字分家会让 K 的像素空间与 camerad 实际
+  # 送的帧不一致 (1344x760 的帧配 1920x1080 的 K = 模型 warp 尺度偏 1.43 倍)。
+  if isinstance(env_key, (list, tuple)):
+    for k in env_key:
+      env = os.environ.get(k)
+      if env:
+        return cast(env)
+    return val
+  env = os.environ.get(env_key)
+  return cast(env) if env else val
+
+
+def _camera_config_from_params(width_env, height_env, base_fl: float, param_key: str, base_w: int = 1920) -> CameraConfig:
+  width = _env_or(1920, width_env)
+  height = _env_or(1080, height_env)
+  fl = base_fl * (width / base_w)
+  try:
+    calib_fl, _, _ = _read_calib_from_params(param_key, width, height, fl)
+    return CameraConfig(width, height, calib_fl)
+  except Exception:
+    return CameraConfig(width, height, fl)
+
+
 _ar_ox_fisheye = CameraConfig(1928, 1208, 567.0)  # focal length probably wrong? magnification is not consistent across frame
 _os_fisheye = CameraConfig(2688 // 2, 1520 // 2, 567.0 / 4 * 3)
 _ar_ox_config = DeviceCameraConfig(CameraConfig(1928, 1208, 2648.0), _ar_ox_fisheye, _ar_ox_fisheye)
@@ -69,6 +126,16 @@ DEVICE_CAMERAS: dict[tuple[str, str], DeviceCameraConfig] = {
 }
 prods = itertools.product(('tici', 'tizi', 'mici'), (('ar0231', _ar_ox_config), ('ox03c10', _ar_ox_config), ('os04c10', _os_config)))
 DEVICE_CAMERAS.update({(d, c[0]): c[1] for d, c in prods})
+
+# ---- AGX Orin + twgmsl IMX390 GMSL 双摄 (PC webcamerad 路径) ----
+# 角色按镜头 FOV 分配, 与 v4l2 节点号无关 (节点号由 scripts/resolve_cams.sh 动态解析):
+#   road (narrow_road) = 120° 广角 → 厂商标定 pinhole fl≈961.76 @1920x1080 (本机 /dev/video1)
+#   wide (wide_road)   =  60° 窄角 → 厂商标定 fl≈1740.0 @1920x1080 (本机 /dev/video2)
+# camerad 的 roadCameraState.sensor 枚举报不出 imx390, 故改 ("pc","unknown") 这一条
+# (PC 路径只会命中它)。数值按角色给, 与解析到的节点号无关。
+_imx390_fcam = _camera_config_from_params(("ROAD_CAM_WIDTH", "CAM_WIDTH"), ("ROAD_CAM_HEIGHT", "CAM_HEIGHT"), 961.76, "FcamIntrinsics")
+_imx390_ecam = _camera_config_from_params(("WIDE_CAM_WIDTH", "CAM_WIDTH"), ("WIDE_CAM_HEIGHT", "CAM_HEIGHT"), 1740.0, "EcamIntrinsics")
+DEVICE_CAMERAS[("pc", "unknown")] = DeviceCameraConfig(_imx390_fcam, _imx390_ecam, _imx390_ecam)
 
 # device/mesh : x->forward, y-> right, z->down
 # view : x->right, y->down, z->forward
