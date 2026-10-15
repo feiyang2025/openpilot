@@ -125,3 +125,14 @@ sessions/
 !.run/*
 *.apk
 /jetlink_ci/
+
+# 模型引擎产物不入库 (铁律2: .plan/.so/标定 JSON/日志)
+*.plan
+*.plan.*
+openpilot/selfdrive/modeld/models/*/driving_*_metadata.pkl
+openpilot/selfdrive/modeld/models/*/big_driving_supercombo_metadata.pkl
+openpilot/selfdrive/modeld/transforms/*.so
+openpilot/system/camerad/webcam/*.so
+
+# onnx 源模型同样不入库 (产物由本机 trtexec 生成 .plan)
+*.onnx

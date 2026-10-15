@@ -19,8 +19,14 @@ POLICY_KEYS = frozenset((
 ))
 
 VISION_ENGINE_SHAPES = {
+  # BigCombo (merged) 引擎的绑定名
   "img": (1, 12, 128, 256),
   "big_img": (1, 12, 128, 256),
+  # FiletOFish (split) 引擎实测绑定名 —— engine 里就叫 input_imgs/big_input_imgs。
+  # TrtRunner 按引擎实际绑定名取 kwargs (trt_runner.py:196), 所以每个 profile 必须
+  # 用自己 engine 的真实名字, 否则 kwargs.get('img') 拿到 None 直接报错。
+  "input_imgs": (1, 12, 128, 256),
+  "big_input_imgs": (1, 12, 128, 256),
 }
 
 
@@ -121,7 +127,7 @@ def _filet_ofish() -> ModelProfile:
     engine_dir=str(engine_dir),
     vision_engine=vision_engine,
     policy_engine=policy_engine,
-    vision_input_names=["img", "big_img"],
+    vision_input_names=["input_imgs", "big_input_imgs"],
     input_shapes=dict(VISION_ENGINE_SHAPES),
     vision_slices=_output_slices(vision_meta, engine_dir / "driving_vision_metadata.pkl"),
     policy_slices=_output_slices(policy_meta, engine_dir / "driving_policy_metadata.pkl"),

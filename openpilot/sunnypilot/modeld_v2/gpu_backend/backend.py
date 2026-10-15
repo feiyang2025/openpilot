@@ -74,7 +74,11 @@ class GpuBackend:
       self.policy_runner = TrtRunner(str(root / profile.policy_engine))
 
     # The vision tensor dtype comes from the engine, not from a constant.
-    vision_dtype = self.vision_runner.input_dtypes.get("img", np.dtype(np.uint8))
+    # dtype 从引擎绑定读, 不写死: BigCombo=uint8, FiletOFish 也实测 uint8, 但绑定名不同
+    # (img vs input_imgs), 所以必须按本 profile 的第一个 vision 输入名取, 否则取不到
+    # 会静默退回 uint8 —— 换模型/换引擎时就是无声的错。
+    _vision_key = profile.vision_input_names[0]
+    vision_dtype = self.vision_runner.input_dtypes.get(_vision_key, np.dtype(np.uint8))
     self.transform = CudaTransform(profile.model_w, profile.model_h, profile.temporal_skip, str(lib),
                                    dtype=vision_dtype)
 
