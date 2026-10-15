@@ -227,15 +227,24 @@ class TrtRunner:
     return cpu_out.astype(np.float32).ravel() if self.output_dtype_np != np.float32 else cpu_out.ravel()
 
   def close(self) -> None:
+    # Idempotent: every resource is cleared as it is released. Without this a second
+    # call - from an explicit close() plus __del__, or two owners dropping the last
+    # reference - frees the same stream and buffers twice, which segfaults inside the
+    # driver rather than raising something catchable.
     if getattr(self, "_handle", None):
       self._lib.trt_engine_destroy(self._handle)
       self._handle = None
     if getattr(self, "stream", None):
       self._cuda.cuStreamDestroy_v2(self.stream)
+      self.stream = None
     if getattr(self, "gpu_output", None):
       self._cuda.cuMemFree_v2(self.gpu_output)
-    for info in getattr(self, "_input_gpu", {}).values():
-      self._cuda.cuMemFree_v2(info["ptr"])
+      self.gpu_output = None
+    for name, info in list(getattr(self, "_input_gpu", {}).items()):
+      if info.get("ptr"):
+        self._cuda.cuMemFree_v2(info["ptr"])
+        info["ptr"] = None
+    self._input_gpu = {}
 
   def __del__(self):
     try:

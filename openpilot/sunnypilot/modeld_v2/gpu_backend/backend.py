@@ -143,6 +143,17 @@ def create_gpu_backend(profile: ModelProfile) -> GpuBackend | None:
     cloudlog.warning(f"TensorRT unavailable ({trt_error}); CUDA backend disabled")
     return None
   try:
+    # TrtRunner allocates through the CUDA driver and needs a context that already
+    # exists. modeld normally has one from the tinygrad runner, but a bare process
+    # (tests, a one-off script) does not, and the failure is a bare
+    # "No active CUDA context" that reads like a broken install. tinygrad owns that
+    # context for the whole process, so go through it rather than making our own.
+    from tinygrad import Device
+    Device["CUDA"]
+  except Exception as e:
+    cloudlog.warning(f"could not initialise a CUDA context ({type(e).__name__}: {e}); CUDA backend disabled")
+    return None
+  try:
     return GpuBackend(profile)
   except Exception as e:
     cloudlog.warning(f"CUDA backend init failed, falling back to tinygrad: {type(e).__name__}: {e}")

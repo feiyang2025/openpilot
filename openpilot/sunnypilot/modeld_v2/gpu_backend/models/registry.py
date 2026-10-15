@@ -105,8 +105,12 @@ def np_prod(values) -> int:
 
 
 def _engine(engine_dir: Path, *names: str) -> str | None:
+  # A zero-byte engine is a trtexec run that died partway through; it must not win
+  # the candidate search, or it shadows a perfectly good plan sitting later in the
+  # list and the profile just reports itself unready.
   for name in names:
-    if (engine_dir / name).is_file():
+    path = engine_dir / name
+    if path.is_file() and path.stat().st_size > 0:
       return name
   return None
 
@@ -166,6 +170,44 @@ def _big_combo() -> ModelProfile:
   )
 
 
+def _supercombo() -> ModelProfile:
+  # The small model the bundle actually ships (driving_supercombo.onnx): one merged
+  # engine, FLOAT16 img inputs after the UINT8 rewrite, features_buffer (1, 24, 512),
+  # desire_pulse (1, 25, 8), output 2576 wide. Same layout as BigCombo/TGC, so this
+  # is that code path with a different directory.
+  engine_dir = MODELS_ROOT / "supercombo"
+  # No _fp16 engine on purpose: the 20 Gelu(approximate=0) nodes have no fp16
+  # implementation on sm_87, so trtexec fails with "Could not find any
+  # implementation for node_conv2d_1 + node_gelu_1". The fp32 engine builds and
+  # runs at 14.49 ms / 69 Hz, well inside the 20 Hz budget.
+  merged_engine = _engine(engine_dir, "driving_supercombo_fp16.plan", "driving_supercombo_fp32.plan",
+                          "driving_supercombo.plan")
+  if merged_engine is None:
+    raise MetadataError(f"supercombo: missing merged engine in {engine_dir}")
+
+  metadata_path = engine_dir / "driving_supercombo_metadata.pkl"
+  metadata = _load_metadata(metadata_path)
+  slices = _output_slices(metadata, metadata_path)
+  vision, policy = _split_slices(slices)
+
+  shapes = metadata.get("input_shapes") or {}
+  if not shapes:
+    raise MetadataError(f"{metadata_path} has no input_shapes; cannot size the scalar inputs")
+
+  return ModelProfile(
+    name="supercombo",
+    mode="merged",
+    engine_dir=str(engine_dir),
+    merged_engine=merged_engine,
+    vision_input_names=["img", "big_img"],
+    input_shapes={**VISION_ENGINE_SHAPES, **shapes},
+    vision_slices=vision,
+    policy_slices=policy,
+    temporal=_temporal_from_metadata(metadata, metadata_path, "features_buffer", "desire_pulse"),
+    scalar_input_shapes=dict(shapes),
+  )
+
+
 def _tgc() -> ModelProfile:
   # The big model sunnypilot currently publishes as `big_driving_supercombo.onnx`
   # is TGC-shaped, not the older BigCombo: desire_pulse is (1, 33, 8),
@@ -210,12 +252,14 @@ def _build(name: str, factory) -> ModelProfile | None:
 
 
 REGISTRY: dict[str, ModelProfile | None] = {
-  # Order is the default preference: the split FiletOFish is the small model and
-  # stays the fallback target, the merged BigCombo/TGC are the big model and are
-  # only picked when asked for by name (Params/env).
-  "FiletOFish": _build("FiletOFish", _filet_ofish),
+  # Order is the default preference. `supercombo` is the small model the bundle
+  # ships and is what runs unless a big model is asked for by name; TGC is that big
+  # model. FiletOFish is a different split model (632 + 5884) kept for the profile
+  # project3 ran on the Orin - it is NOT the bundle's small model, so it stays last.
+  "supercombo": _build("supercombo", _supercombo),
   "BigCombo": _build("BigCombo", _big_combo),
   "TGC": _build("TGC", _tgc),
+  "FiletOFish": _build("FiletOFish", _filet_ofish),
 }
 
 

@@ -31,17 +31,22 @@ class GpuModelState(ModelStateBase):
   `cuda_patches.patch_modeld_state`.
   """
 
-  def __init__(self, cam_w: int, cam_h: int, chestnut: bool):
+  def __init__(self, cam_w: int, cam_h: int, chestnut: bool, profile=None):
     ModelStateBase.__init__(self)
     self.chestnut = chestnut
     self.frame_drop_ratio = 0
     self.in_control = False
     self.signal_shadow = None
 
-    model_name = os.getenv("MODEL_NAME") or Params().get("Model", encoding="utf-8")
-    self.profile = resolve_profile(model_name)
-    if self.profile is None:
-      raise RuntimeError(f"no usable CUDA model profile for {model_name or 'default'}")
+    # The caller (cuda_patches) has already decided which profile fits chestnut or
+    # not; re-resolving here would pick the registry default and silently run the
+    # big model as the small one, so only resolve when nobody passed one in.
+    if profile is None:
+      model_name = os.getenv("MODEL_NAME") or Params().get("Model")
+      profile = resolve_profile(model_name)
+      if profile is None:
+        raise RuntimeError(f"no usable CUDA model profile for {model_name or 'default'}")
+    self.profile = profile
     self.backend = create_gpu_backend(self.profile)
     if self.backend is None:
       raise RuntimeError("CUDA backend unavailable (see the create_gpu_backend warning for the reason)")
@@ -78,7 +83,7 @@ class GpuModelState(ModelStateBase):
     self._warm = False
 
     cloudlog.warning(
-      f"GpuModelState initialized: model={model_name or 'default'} profile={self.profile.name} "
+      f"GpuModelState initialized: profile={self.profile.name} chestnut={chestnut} "
       f"mode={self.profile.mode} scalars={sorted(self.input_shapes)}"
     )
 

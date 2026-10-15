@@ -118,22 +118,39 @@ def patch_modeld_state(modeld: object) -> bool:
 
   original_init = modeld.ModelState.__init__
 
+  # chestnut is the big model; without it the small model runs. Both can be CUDA
+  # profiles here, so the requested one is picked by shape rather than by name:
+  # merged profiles carry the big models, the split/small one does not. MODEL_NAME
+  # still wins when it is set.
+  def _pick_profile(chestnut: bool):
+    from openpilot.sunnypilot.modeld_v2.gpu_backend.models.registry import REGISTRY, resolve_profile
+
+    requested = os.getenv("MODEL_NAME") or None
+    if requested:
+      return resolve_profile(requested)
+    fallback = None
+    for profile in REGISTRY.values():
+      if profile is None or not profile.is_ready():
+        continue
+      if profile.mode == "merged":
+        if chestnut:
+          return profile
+      elif fallback is None:
+        fallback = profile
+    return fallback if not chestnut else None
+
   @functools.wraps(original_init)
-  def __init__(self, cam_w: int, cam_h: int, chestnut: bool):
-    if not chestnut:
-      original_init(self, cam_w, cam_h, chestnut)
-      return
+  def __init__(self, cam_w: int, cam_h: int, chestnut: bool = False):
     try:
       from openpilot.sunnypilot.modeld_v2.gpu_model_state import GpuModelState
-      from openpilot.sunnypilot.modeld_v2.gpu_backend.models.registry import resolve_profile
-      profile = resolve_profile(os.getenv("MODEL_NAME") or None)
+      profile = _pick_profile(chestnut)
       if profile is None:
         _PATCH_STATE["modeld"] = "no usable CUDA profile (engines or metadata missing); using tinygrad"
         original_init(self, cam_w, cam_h, chestnut)
         return
-      GpuModelState.__init__(self, cam_w, cam_h, chestnut)
+      GpuModelState.__init__(self, cam_w, cam_h, chestnut, profile=profile)
       self.signal_shadow = None
-      _PATCH_STATE["modeld"] = f"cuda profile={profile.name} mode={profile.mode}"
+      _PATCH_STATE["modeld"] = f"cuda profile={profile.name} mode={profile.mode} chestnut={chestnut}"
     except Exception as e:
       _PATCH_STATE["modeld"] = f"{type(e).__name__}: {e}; using tinygrad"
       original_init(self, cam_w, cam_h, chestnut)
@@ -175,6 +192,10 @@ def apply() -> list[str]:
 
   for name, module, patch in (
     ("modeld", "openpilot.selfdrive.modeld.modeld", patch_modeld_state),
+    # modeld_v2 is what actually runs here: the current bundle's runner is tinygrad,
+    # so process_config starts modeld_tinygrad and the stock module above is never
+    # imported. Without this hook the patch would never fire on this machine.
+    ("modeld_v2", "openpilot.sunnypilot.modeld_v2.modeld", patch_modeld_state),
     ("camerad", "openpilot.system.camerad.webcam.camerad", patch_camerad_camera),
   ):
     try:
