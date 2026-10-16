@@ -258,12 +258,29 @@ def _packed_yuv_to_nv12(yuv_data, width, height, pixel_format='UYVY', chroma_swa
   return nv12
 
 
-# 本机(Orin)驱动在多线程并发 CUDA 调用下不稳定: 单线程 4/4 OK, 双线程并发(即使
-# 每线程实例都已串行 warmup、即使加全局锁)仍在 cudaMemcpy2D 内段错误——
-# faulthandler 指在 CUDA runtime 内部的每线程状态上。参照本机驱动 API 的其他
-# 异常(cuDeviceGet->101, cuMemAlloc->201), 结论: 这台机器的 CUDA 只保证单线程稳定。
-# 所以所有 convert 都投递到唯一的 CUDA 工作线程串行执行: 20Hz 下每帧 2-3ms,
-# 两路合计 ~6ms, 预算内, 且从未崩溃。
+# 🔴 本机段错误的真正根因(最小复现 100%): 进程里若有"显式 dlopen(libcudart.so)"
+# 与 libpacked_to_nv12.so 的"链接期依赖"两种加载方式并存, 第二次 CUDA 调用必段错误。
+# RTLD_NOLOAD 统一句柄后此问题消失。为此:
+#   1) 全进程只允许一个 cudart 句柄工厂(下函数), 任何地方禁止直接 ctypes.CDLL('libcudart*')
+#   2) CUDA 调用全部投递到唯一工作线程串行执行(双线程并发即使单句柄也会崩)
+_cudart_handle = None
+
+
+def get_cudart():
+  """The one cudart handle for this process.
+
+  RTLD_NOLOAD: if libpacked_to_nv12.so already pulled in the runtime as a link
+  dependency, this returns that exact instance instead of loading anything; if
+  not, it loads once. Either way there is exactly one copy of libcudart in the
+  process, which is what this driver requires.
+  """
+  global _cudart_handle
+  if _cudart_handle is None:
+    import os
+    _cudart_handle = ctypes.CDLL('libcudart.so', mode=os.RTLD_NOLOAD | os.RTLD_GLOBAL)
+  return _cudart_handle
+
+
 _CUDA_EXECUTOR: threading.Thread | None = None
 _CUDA_QUEUE: queue.SimpleQueue = queue.SimpleQueue()
 
@@ -274,15 +291,14 @@ def _cuda_worker() -> None:
   # the runtime initialises. Do a tiny allocation round-trip here, alone, before
   # any real work is queued - and retry until it succeeds, so business calls
   # never see the cold path.
-  import ctypes as _ct
-  cudart = _ct.CDLL('libcudart.so')
-  cudart.cudaMalloc.argtypes = [_ct.POINTER(_ct.c_void_p), _ct.c_size_t]
-  cudart.cudaMalloc.restype = _ct.c_int
-  cudart.cudaFree.argtypes = [_ct.c_void_p]
-  cudart.cudaFree.restype = _ct.c_int
+  cudart = get_cudart()
+  cudart.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+  cudart.cudaMalloc.restype = ctypes.c_int
+  cudart.cudaFree.argtypes = [ctypes.c_void_p]
+  cudart.cudaFree.restype = ctypes.c_int
   for attempt in range(20):
-    p = _ct.c_void_p()
-    if cudart.cudaMalloc(_ct.byref(p), 4096) == 0:
+    p = ctypes.c_void_p()
+    if cudart.cudaMalloc(ctypes.byref(p), 4096) == 0:
       cudart.cudaFree(p)
       print(f'[cuda-worker] warmed up (attempt {attempt + 1})', flush=True)
       break
@@ -574,7 +590,7 @@ class Camerad:
     self._cuda = None
     if self._zerocopy or self._nvbuf_zerocopy:
       try:
-        self._cudart = ctypes.CDLL('libcudart.so')
+        self._cudart = get_cudart()
         self._cudart.cudaHostGetDevicePointer.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint]
         self._cudart.cudaHostGetDevicePointer.restype = ctypes.c_int
         self._cudart.cudaHostRegister.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
