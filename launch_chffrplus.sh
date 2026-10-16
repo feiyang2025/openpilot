@@ -820,6 +820,39 @@ launch() {
   # "error connecting to /tmp/tmux-1000/default" and leaves a bogus log behind.
   tmux ls >/dev/null 2>&1 && tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
+  # ---- Fake panda (bench only, no CAN hardware) ----
+  # Road default is to never synthesize ignition or CAN; opt in explicitly with
+  # ENABLE_FAKE_PANDA=1. Without it and without a real panda, ignition stays
+  # False and manager never starts camerad/modeld (hardwared.py:281,472 ->
+  # manager.py:172-190). Ported from project3's launcher: publishes pandaStates
+  # with ignition set plus CAN frames packed with the real Corolla TSS2 DBC, so
+  # carState is valid and the UI renders lane lines.
+  if [ "${ENABLE_FAKE_PANDA:-0}" = "1" ] && ! lsusb 2>/dev/null | grep -qiE "3801|bbaa|0483"; then
+    # Only recognize instances from THIS tree. Matching by bare process name let
+    # another openpilot tree's instance make this tree skip startup - and both
+    # instances would write the same /dev/shm/msgq_* files, two publishers on one
+    # topic. Kill any other tree's instance before starting ours.
+    if pgrep -f "$DIR/tools/sim/fake_panda_state.py" > /dev/null 2>&1; then
+      echo "[sim] fake panda already running (this tree), skipping"
+    else
+      if pgrep -f "[f]ake_panda_state" > /dev/null 2>&1; then
+        echo "[sim] stopping another tree's fake panda (it shares our /dev/shm/msgq_*)"
+        pkill -f "[f]ake_panda_state" 2>/dev/null || true
+        sleep 1
+      fi
+      echo "[sim] starting fake panda (ignition + CAN)"
+      rm -f /dev/shm/msgq_pandaStates /dev/shm/msgq_can 2>/dev/null || true
+      nohup "$PY" "$DIR/tools/sim/fake_panda_state.py" > /tmp/fake_panda.log 2>&1 &
+      sleep 2
+    fi
+    pgrep -f "$DIR/tools/sim/fake_panda_state.py" > /dev/null 2>&1 \
+      && echo "[sim] fake panda running" || echo "[sim] WARNING: fake panda NOT running"
+  elif lsusb 2>/dev/null | grep -qiE "3801|bbaa|0483"; then
+    echo "[road] real panda detected; fake panda disabled"
+  else
+    echo "[road] fake panda disabled; waiting for real panda"
+  fi
+
   cd openpilot/system/manager
   if [ ! -f "$DIR/prebuilt" ]; then
     if ! ./build.py; then
