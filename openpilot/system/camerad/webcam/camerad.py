@@ -93,8 +93,12 @@ class FrameSync:
 g_frame_sync = FrameSync()
 
 GMSL_WEBCAM = os.getenv("GMSL_WEBCAM", "0") == "1"
-ROAD_CAM = os.getenv("ROAD_CAM", "1" if GMSL_WEBCAM else "0")
-WIDE_CAM = os.getenv("WIDE_CAM", "2" if GMSL_WEBCAM else "")
+# GMSL 下的默认值按本机 T906G 实测的镜头位置(2026-10-16 用户确认):
+#   9-0028 = 120° 主路 road -> /dev/video0, 9-002a = 60° wide -> /dev/video1
+# 正常应由 launch_env.sh 调 scripts/resolve_cams.sh 按设备名注入; 这里的默认值只兜底,
+# 但必须与之一致, 否则绕过 launch_env.sh 直接起 manager 会把 road/wide 对调。
+ROAD_CAM = os.getenv("ROAD_CAM", "0" if GMSL_WEBCAM else "0")
+WIDE_CAM = os.getenv("WIDE_CAM", "1" if GMSL_WEBCAM else "")
 DRIVER_CAM = os.getenv("DRIVER_CAM")
 # UseWideCamera=0 -> manager 的 configure_wide_camera() 设 DISABLE_WIDE_ROAD=1。
 # 原生 camerad (system/camerad/cameras/hw.h) 认这个变量, 但 WEBCAM=1 时跑的是这个
@@ -534,9 +538,29 @@ class Camerad:
 
     print(f"[camerad] config: repo_root={REPO_ROOT} gmsl={GMSL_WEBCAM} ROAD_CAM={ROAD_CAM} WIDE_CAM={WIDE_CAM} use_v4l2={self.use_v4l2} use_nvmm={self.use_nvmm}", flush=True)
 
+    _healthy_cams = []
     for c in CAMERAS:
       cam_device = f"/dev/video{c.cam_id}" if platform.system() != "Darwin" else c.cam_id
       cam = Camera(c.msg_name, c.stream_type, cam_device)
+      # 这一路没探到首帧 (GMSL 未锁定 / 链路脏): 不为它建 VisionIPC 流, 也不进发送列表。
+      # 否则 modeld 会把该流当可用 -> use_extra_client=True -> 死等 connect -> 空转不出
+      # modelV2。剔除后 modeld 自动走 road 单路降级, road 那一路不受影响。
+      if getattr(getattr(cam, 'cam', None), 'probe_failed', False):
+        print(f"[camerad] {c.msg_name} ({cam_device}): 该路未探到首帧, 不建 visionipc 流、不进发送列表 "
+              f"(modeld 将自动降级为单路推理)", flush=True)
+        continue
+      _healthy_cams.append(cam)
+
+    if not _healthy_cams:
+      # 所有路都没帧. 这种情况下仍要给出至少一个流, 否则 modeld 连 main 都连不上会卡死;
+      # 保留第一路, 让它按 G_FMT 猜的几何跑 (画面可能不对, 但不会阻塞整条推理链)。
+      print("[camerad] 警告: 所有相机都没探到首帧, 保留第一路继续运行 (画面可能异常)", flush=True)
+      cam_device = f"/dev/video{CAMERAS[0].cam_id}" if platform.system() != "Darwin" else CAMERAS[0].cam_id
+      _healthy_cams.append(Camera(CAMERAS[0].msg_name, CAMERAS[0].stream_type, cam_device))
+
+    for cam in _healthy_cams:
+      c = next(cc for cc in CAMERAS if cc.msg_name == cam.cam_type_state)
+      cam_device = f"/dev/video{c.cam_id}" if platform.system() != "Darwin" else c.cam_id
       self.cameras.append(cam)
       out_w = int(os.environ.get('CAM_WIDTH', cam.W))
       out_h = int(os.environ.get('CAM_HEIGHT', cam.H))
