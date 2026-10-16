@@ -19,6 +19,10 @@ source "$DIR/launch_env.sh"
 # ---------------------------------------------------------------------------
 find_python() {
   local py="$1"
+  # Prefer the checkout's own venv interpreter: it already has capnp, msgq and the
+  # rest of the compiled stack linked in. Only fall back to whatever python3 is on
+  # PATH for AGNOS-style installs.
+  if [ -x "$DIR/.venv/bin/python" ]; then echo "$DIR/.venv/bin/python"; return 0; fi
   command -v "$py" >/dev/null 2>&1 && echo "$py" && return 0
   command -v python3 >/dev/null 2>&1 && echo python3 && return 0
   return 1
@@ -29,6 +33,12 @@ setup_python_path() {
   local venv_site="/usr/local/venv/lib/python3.12/site-packages"
   local py_path="$root"
   [ -d "$venv_site" ] && py_path="$py_path:$venv_site"
+  # Non-AGNOS installs (this Jetson bench) keep the venv in the checkout, not in
+  # /usr/local/venv. Without this, PYTHONPATH never contains capnp/tinygrad/etc.
+  # and every entry point dies at `import capnp`.
+  local repo_venv
+  repo_venv="$(echo "$root"/.venv/lib/python3*/site-packages)"
+  [ -d "$repo_venv" ] && py_path="$py_path:$repo_venv"
   [ -d "$PYDEPS_DIR" ] && py_path="$py_path:$PYDEPS_DIR"
   echo "$py_path"
 }
@@ -413,7 +423,13 @@ mount_nvme() {
     OWNER="$(stat -c '%U' /data/media/0/realdata)"
     GROUP="$(stat -c '%G' /data/media/0/realdata)"
     PERM="$(stat -c '%a' /data/media/0/realdata)"
-    [ "$OWNER" != "comma" ] || [ "$GROUP" != "comma" ] && chown comma:comma /data/media/0/realdata
+    # AGNOS runs as the "comma" user; this bench does not have it, and `chown
+    # comma:comma` just fails with "invalid user" and sets a nonzero status.
+    if id comma >/dev/null 2>&1; then
+      [ "$OWNER" != "comma" ] || [ "$GROUP" != "comma" ] && chown comma:comma /data/media/0/realdata
+    else
+      [ "$OWNER" != "$(id -un)" ] && echo "[warn] /data/media/0/realdata owned by $OWNER, not chowning (no comma user)"
+    fi
     [ "$PERM" != "755" ] && chmod 755 /data/media/0/realdata
   fi
 }
@@ -757,7 +773,11 @@ launch() {
   fi
 
   sudo mkdir -p /cache/tsk
-  sudo chown comma:comma /cache/tsk
+  if id comma >/dev/null 2>&1; then
+    sudo chown comma:comma /cache/tsk
+  else
+    echo "[warn] /cache/tsk left owned by $(stat -c '%U' /cache/tsk): no comma user on this host"
+  fi
 
   # AGNOS-specific hardware detection (slow on first boot, cached afterwards)
   [ -f /AGNOS ] && { set_tici_hw; set_lite_hw; }
@@ -789,7 +809,9 @@ launch() {
   # AGNOS OS update (may loop updater)
   [ -f /AGNOS ] && agnos_init
 
-  tmux capture-pane -pq -S-1000 > /tmp/launch_log
+  # Only useful when a tmux server exists; without one capture-pane prints
+  # "error connecting to /tmp/tmux-1000/default" and leaves a bogus log behind.
+  tmux ls >/dev/null 2>&1 && tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
   cd openpilot/system/manager
   if [ ! -f "$DIR/prebuilt" ]; then
