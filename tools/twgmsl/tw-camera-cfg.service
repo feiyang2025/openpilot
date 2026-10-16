@@ -1,0 +1,26 @@
+[Unit]
+Description=TW GMSL camera link configuration (tw_camera_cfg)
+Documentation=file:///usr/local/bin/tw_camera_cfg
+# The tool programs the GMSL deserializers/serializers and then watches the link
+# state in an endless loop; the camera nodes only stream once it has run. It needs
+# root and it must not be killed early - its own output warns that exiting on a
+# signal can leave the cameras unusable, hence Restart=always below.
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tw_camera_cfg
+Restart=always
+RestartSec=5
+# Give it time to finish programming the links on the first attempt.
+TimeoutStartSec=0
+# Stop politely: a clean exit is better than a kill, but if it does not manage it
+# we still want it back, so keep the restart policy.
+KillSignal=SIGINT
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
