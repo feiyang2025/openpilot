@@ -98,10 +98,19 @@ class GpuBackend:
       self.transform(key, frame, proj, shape)
       self._vision_ptrs[key] = self.transform.last_ptr
 
+  def _vision_kwargs(self, scalar_inputs: dict[str, np.ndarray]) -> dict:
+    # Vision pointers go in last and win. A caller that passes a full input dict
+    # (GpuModelState builds one from the profile) would otherwise overwrite the
+    # transform's device pointer with a zero array and the engine would run on a
+    # black image without a single error.
+    kwargs: dict = dict(scalar_inputs)
+    for key in self.profile.vision_input_names:
+      if key in self._vision_ptrs:
+        kwargs[key] = self._vision_ptrs[key]
+    return kwargs
+
   def infer_merged(self, scalar_inputs: dict[str, np.ndarray]) -> np.ndarray:
-    kwargs: dict = {k: self._vision_ptrs[k] for k in self.profile.vision_input_names if k in self._vision_ptrs}
-    kwargs.update(scalar_inputs)
-    return self.vision_runner(**kwargs)
+    return self.vision_runner(**self._vision_kwargs(scalar_inputs))
 
   def infer_split(self, scalar_inputs: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     """Run vision then policy.
@@ -110,8 +119,7 @@ class GpuBackend:
     the modeld layer (GpuModelState._update_temporal), which shifts exactly once
     per frame using whichever engine actually produced hidden_state.
     """
-    vision_kwargs: dict = {k: self._vision_ptrs[k] for k in self.profile.vision_input_names if k in self._vision_ptrs}
-    vision_out = self.vision_runner(**vision_kwargs)
+    vision_out = self.vision_runner(**self._vision_kwargs(scalar_inputs))
     policy_out = self.policy_runner(**scalar_inputs)
     return vision_out, policy_out
 

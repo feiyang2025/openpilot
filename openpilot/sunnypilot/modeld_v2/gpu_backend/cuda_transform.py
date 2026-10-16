@@ -1,13 +1,10 @@
 import ctypes
 import os
-from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
 from tinygrad.dtype import dtypes
 from tinygrad.tensor import Tensor
-
-MAX_REGISTERED_FRAMES = 32
 
 
 class CudaTransform:
@@ -33,9 +30,9 @@ class CudaTransform:
     self.dtype = np.dtype(dtype)
     if self.dtype != np.uint8 and getattr(dtypes, self.dtype.name, None) is None:
       raise RuntimeError(f"tinygrad has no dtype for {self.dtype}")
-    self._cuda = ctypes.CDLL("libcuda.so.1")
     self._library = ctypes.CDLL(path)
-    self._library.cuda_transform_init.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    self._library.cuda_transform_init.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                                  ctypes.c_int, ctypes.c_int]
     self._library.cuda_transform_init.restype = None
     self._library.cuda_transform_execute.argtypes = [
       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
@@ -44,14 +41,7 @@ class CudaTransform:
     self._library.cuda_transform_execute.restype = ctypes.c_void_p
     self._library.cuda_transform_destroy.argtypes = [ctypes.c_void_p]
     self._library.cuda_transform_destroy.restype = None
-    self._cuda.cuMemHostRegister.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
-    self._cuda.cuMemHostRegister.restype = ctypes.c_int
-    self._cuda.cuMemHostUnregister.argtypes = [ctypes.c_void_p]
-    self._cuda.cuMemHostUnregister.restype = ctypes.c_int
     self._states: dict[str, ctypes.Array] = {}
-    # Bounded: visionipc hands out a new pointer every frame, so an unbounded set
-    # would pin every frame the process ever saw.
-    self._registered: OrderedDict[tuple[str, int], None] = OrderedDict()
     self._model_w = model_w
     self._model_h = model_h
     self._temporal_skip = temporal_skip
@@ -60,49 +50,40 @@ class CudaTransform:
   def _state(self, camera: str) -> ctypes.Array:
     if camera not in self._states:
       state = ctypes.create_string_buffer(128)
+      # 0 = uint8, 1 = fp16. The kernel has to be told, not just the Python-side
+      # dtype: the buffer is allocated by the .so, so a uint8-sized one read as
+      # fp16 runs off the end.
+      out_dtype = 0 if self.dtype == np.uint8 else 1
       self._library.cuda_transform_init(
-        ctypes.byref(state), self._model_w, self._model_h, self._temporal_skip,
+        ctypes.byref(state), self._model_w, self._model_h, self._temporal_skip, out_dtype,
       )
       self._states[camera] = state
     return self._states[camera]
 
-  def _unpin(self, key: tuple[str, int]) -> None:
-    try:
-      self._cuda.cuMemHostUnregister(ctypes.c_void_p(key[1]))
-    except Exception:
-      pass
-    self._registered.pop(key, None)
-
   def __call__(self, camera: str, frame, projection: np.ndarray, shape: tuple[int, ...]) -> Tensor:
+    # The frame is passed to the .so as an ordinary HOST pointer; the library stages
+    # it onto the device itself. Pinning it with cuMemHostRegister(DEVICEMAP) and
+    # hoping the host pointer doubles as a device pointer is not viable here: on this
+    # platform the driver API reports no usable device from Python (cuDeviceGet ->
+    # INVALID_DEVICE, cuMemAlloc -> INVALID_CONTEXT) while the runtime API is fine,
+    # so the registration either fails or yields a pointer the kernels fault on.
     data = np.frombuffer(frame.data, dtype=np.uint8)
-    ptr = int(data.ctypes.data)
-    key = (camera, ptr)
-    if key not in self._registered:
-      ret = self._cuda.cuMemHostRegister(ctypes.c_void_p(ptr), data.nbytes, 0x02)
-      if ret != 0:
-        raise RuntimeError(f"cuMemHostRegister failed: {ret}")
-      self._registered[key] = None
-      while len(self._registered) > MAX_REGISTERED_FRAMES:
-        self._unpin(next(iter(self._registered)))
-    else:
-      self._registered.move_to_end(key)
+    proj = np.ascontiguousarray(projection, dtype=np.float32)
     output = self._library.cuda_transform_execute(
-      ctypes.byref(self._state(camera)), ctypes.c_void_p(ptr),
+      ctypes.byref(self._state(camera)), ctypes.c_void_p(int(data.ctypes.data)),
       frame.width, frame.height, frame.stride, frame.uv_offset,
-      projection.astype(np.float32, copy=False).ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+      proj.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
     )
     if not output:
       raise RuntimeError("cuda_transform_execute returned null")
     self.last_ptr = int(output)
-    tdtype = dtypes.uint8 if self.dtype == np.uint8 else dtypes[self.dtype.name]
+    tdtype = dtypes.uint8 if self.dtype == np.uint8 else getattr(dtypes, self.dtype.name)
     return Tensor.from_blob(output, shape, dtype=tdtype, device="CUDA")
 
   def close(self) -> None:
     for state in self._states.values():
       self._library.cuda_transform_destroy(ctypes.byref(state))
     self._states.clear()
-    for key in list(self._registered):
-      self._unpin(key)
 
   def __del__(self):
     try:

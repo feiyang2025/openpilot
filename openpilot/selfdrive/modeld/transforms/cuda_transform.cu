@@ -1,4 +1,5 @@
 #include "cuda_transform.h"
+#include <cuda_fp16.h>
 
 // ---- Constants (matching OpenCL transform.cl) ----
 #define INTER_BITS 5
@@ -143,15 +144,29 @@ __global__ void copy_kernel(const uint8_t *in, uint8_t *out,
     out[gid + out_offset] = in[gid + in_offset];
 }
 
+// ---- widen to the engine's input type ----
+// The temporal ring buffer stays uint8; this only widens the two frames handed to
+// TensorRT, so a fp16-bound engine gets fp16 carrying the same 0..255 content the
+// uint8 path produced.
+__global__ void convert_fp16_kernel(const uint8_t *in, __half *out,
+    int in_offset, int out_offset, int total_work)
+{
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= total_work) return;
+    out[gid + out_offset] = __float2half((float)in[gid + in_offset]);
+}
+
 // ---- C++ API ----
 
 extern "C" {
 
-void cuda_transform_init(CUDATransformState *s, int width, int height, int temporal_skip)
+void cuda_transform_init(CUDATransformState *s, int width, int height, int temporal_skip,
+                         int out_dtype)
 {
     s->width = width;
     s->height = height;
     s->temporal_skip = temporal_skip;
+    s->out_dtype = out_dtype;
 
     int uv_size = (width / 2) * (height / 2);
     s->frame_size = width * height * 3 / 2;  // MODEL_FRAME_SIZE
@@ -162,11 +177,15 @@ void cuda_transform_init(CUDATransformState *s, int width, int height, int tempo
     cudaMalloc(&s->d_u, uv_size);
     cudaMalloc(&s->d_v, uv_size);
 
+    // Frame staging buffer: grown on first use, the source geometry is not known here
+    s->d_frame = nullptr;
+    s->frame_bytes = 0;
+
     // Temporal ring buffer: holds (temporal_skip + 1) frames
     cudaMalloc(&s->d_img_buffer, (temporal_skip + 1) * s->frame_size);
 
-    // Output: 2 frames concatenated
-    cudaMalloc(&s->d_output, s->buf_size);
+    // Output: 2 frames concatenated, widened if the engine binds fp16
+    cudaMalloc(&s->d_output, s->buf_size * (out_dtype == 1 ? (int)sizeof(__half) : 1));
 
     // Projection matrices
     cudaMalloc(&s->d_proj_y, 9 * sizeof(float));
@@ -181,6 +200,11 @@ void cuda_transform_destroy(CUDATransformState *s)
     cudaFree(s->d_y);
     cudaFree(s->d_u);
     cudaFree(s->d_v);
+    if (s->d_frame) {
+        cudaFree(s->d_frame);
+        s->d_frame = nullptr;
+        s->frame_bytes = 0;
+    }
     cudaFree(s->d_img_buffer);
     cudaFree(s->d_output);
     cudaFree(s->d_proj_y);
@@ -189,7 +213,7 @@ void cuda_transform_destroy(CUDATransformState *s)
 }
 
 uint8_t* cuda_transform_execute(CUDATransformState *s,
-                                 const uint8_t *input_nv12,
+                                 const uint8_t *input_nv12_host,
                                  int frame_width, int frame_height,
                                  int frame_stride, int frame_uv_offset,
                                  const float *projection)
@@ -197,6 +221,26 @@ uint8_t* cuda_transform_execute(CUDATransformState *s,
     int w = s->width, h = s->height;
     int uv_size = (w / 2) * (h / 2);
     int frame_size = s->frame_size;
+
+    // Stage the frame on the device. The caller hands us an ordinary host pointer,
+    // so the kernels must not read it directly: that only works for memory that is
+    // already device-mapped. A pageable cudaMemcpy always does.
+    //
+    // frame_uv_offset selects the chroma layout: NV12 passes the size of the Y
+    // plane, packed UYVY passes 0 (U on even bytes, V on odd). Whichever it is,
+    // the copy has to span the Y plane as well as the chroma region - for UYVY the
+    // chroma region sits *inside* the Y rows, and copying only uv_offset +
+    // stride*height/2 would truncate the frame and read past the staging buffer.
+    const int y_bytes = frame_stride * frame_height;
+    const int chroma_end = frame_uv_offset + frame_stride * (frame_height / 2);
+    const int needed = chroma_end > y_bytes ? chroma_end : y_bytes;
+    if (needed > s->frame_bytes) {
+        if (s->d_frame) cudaFree(s->d_frame);
+        cudaMalloc(&s->d_frame, needed);
+        s->frame_bytes = needed;
+    }
+    cudaMemcpy(s->d_frame, input_nv12_host, needed, cudaMemcpyHostToDevice);
+    const uint8_t *input_nv12 = s->d_frame;
 
     // Upload projection matrix
     // Build half-resolution projection for UV
@@ -315,31 +359,42 @@ uint8_t* cuda_transform_execute(CUDATransformState *s,
         loaduv_kernel<<<grid_size, block_size>>>(s->d_v, current_out, y_planes_size + uv_size, total_work);
     }
 
-    // ---- Step 6: Copy previous frame to output ----
-    // img_buffer[0] is the previous frame (already shifted)
+    // ---- Step 6/7: copy previous + current frame to the output tensor ----
+    // img_buffer[0] is the previous frame (already shifted). Both halves land in
+    // one buffer of 2 * frame_size elements; when the engine wants fp16 the same
+    // bytes are widened on the way out.
     {
-        int total_work = frame_size;
+        const bool fp16_out = (s->out_dtype == 1);
         int block_size = 256;
-        int grid_size = (total_work + block_size - 1) / block_size;
-        copy_kernel<<<grid_size, block_size>>>(
-            s->d_img_buffer, s->d_output,
-            0,            // src_offset (frame 0 = previous frame)
-            0,            // dst_offset
-            total_work
-        );
-    }
 
-    // ---- Step 7: Copy current frame to output ----
-    {
         int total_work = frame_size;
-        int block_size = 256;
         int grid_size = (total_work + block_size - 1) / block_size;
-        copy_kernel<<<grid_size, block_size>>>(
-            s->d_img_buffer, s->d_output,
-            s->temporal_skip * frame_size,  // src_offset (current frame)
-            frame_size,                     // dst_offset (second half of output)
-            total_work
-        );
+        if (fp16_out) {
+            convert_fp16_kernel<<<grid_size, block_size>>>(
+                s->d_img_buffer, (__half *)s->d_output, 0, 0, total_work);
+        } else {
+            copy_kernel<<<grid_size, block_size>>>(
+                s->d_img_buffer, s->d_output,
+                0,            // src_offset (frame 0 = previous frame)
+                0,            // dst_offset
+                total_work
+            );
+        }
+
+        total_work = frame_size;
+        grid_size = (total_work + block_size - 1) / block_size;
+        if (fp16_out) {
+            convert_fp16_kernel<<<grid_size, block_size>>>(
+                s->d_img_buffer, (__half *)s->d_output,
+                s->temporal_skip * frame_size, frame_size, total_work);
+        } else {
+            copy_kernel<<<grid_size, block_size>>>(
+                s->d_img_buffer, s->d_output,
+                s->temporal_skip * frame_size,  // src_offset (current frame)
+                frame_size,                     // dst_offset (second half of output)
+                total_work
+            );
+        }
     }
 
     cudaDeviceSynchronize();

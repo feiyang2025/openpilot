@@ -57,6 +57,17 @@ def _output_slices(metadata: dict, source: Path) -> dict[str, slice]:
   return slices
 
 
+def _scalars(shapes: dict, vision_names) -> dict:
+  """Metadata input_shapes lists the image tensors too.
+
+  Those are not scalars: they are filled by the CUDA transform, which hands the
+  backend a device pointer. Leaving them in this dict makes callers build a zero
+  array for them and then overwrite the pointer, so every inference silently runs
+  on a black image. They are dropped here once instead of at each call site.
+  """
+  return {k: v for k, v in shapes.items() if k not in set(vision_names)}
+
+
 def _split_slices(slices: dict[str, slice]) -> tuple[dict[str, slice], dict[str, slice]]:
   vision = {k: v for k, v in slices.items() if k not in POLICY_KEYS}
   policy = {k: v for k, v in slices.items() if k in POLICY_KEYS}
@@ -137,7 +148,7 @@ def _filet_ofish() -> ModelProfile:
     policy_slices=_output_slices(policy_meta, engine_dir / "driving_policy_metadata.pkl"),
     temporal=_temporal_from_metadata(policy_meta, engine_dir / "driving_policy_metadata.pkl",
                                      "features_buffer", "desire"),
-    scalar_input_shapes=dict(policy_meta.get("input_shapes") or {}),
+    scalar_input_shapes=_scalars(policy_meta.get("input_shapes") or {}, ["input_imgs", "big_input_imgs"]),
   )
 
 
@@ -166,7 +177,7 @@ def _big_combo() -> ModelProfile:
     vision_slices=vision,
     policy_slices=policy,
     temporal=_temporal_from_metadata(metadata, metadata_path, "features_buffer", "desire_pulse"),
-    scalar_input_shapes=dict(shapes),
+    scalar_input_shapes=_scalars(shapes, ["img", "big_img"]),
   )
 
 
@@ -204,7 +215,7 @@ def _supercombo() -> ModelProfile:
     vision_slices=vision,
     policy_slices=policy,
     temporal=_temporal_from_metadata(metadata, metadata_path, "features_buffer", "desire_pulse"),
-    scalar_input_shapes=dict(shapes),
+    scalar_input_shapes=_scalars(shapes, ["img", "big_img"]),
   )
 
 
@@ -238,7 +249,7 @@ def _tgc() -> ModelProfile:
     vision_slices=vision,
     policy_slices=policy,
     temporal=_temporal_from_metadata(metadata, metadata_path, "features_buffer", "desire_pulse"),
-    scalar_input_shapes=dict(shapes),
+    scalar_input_shapes=_scalars(shapes, ["img", "big_img"]),
   )
 
 
