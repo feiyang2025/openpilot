@@ -11,6 +11,13 @@ WHEEL_DIR="$DIR/third_party/wheels"
 # pip and the venv Python wrappers are reachable.
 export PATH="/usr/local/venv/bin:${PATH}"
 
+# Non-AGNOS installs keep the venv in the checkout. Without this, scons is not on
+# PATH and build.py dies with FileNotFoundError: 'scons', which also silently
+# skips every C++ rebuild the tree is asking for.
+if [ -d "$DIR/.venv/bin" ]; then
+  export PATH="$DIR/.venv/bin:${PATH}"
+fi
+
 source "$DIR/launch_env.sh"
 
 # ---------------------------------------------------------------------------

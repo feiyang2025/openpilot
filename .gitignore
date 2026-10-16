@@ -136,3 +136,4 @@ openpilot/system/camerad/webcam/*.so
 
 # onnx 源模型同样不入库 (产物由本机 trtexec 生成 .plan)
 *.onnx
+tools/raylib/
