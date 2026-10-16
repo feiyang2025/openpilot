@@ -18,6 +18,21 @@ from openpilot.sunnypilot.modeld_v2.parse_model_outputs import Parser
 CONTROL_OUTPUTS = ("plan", "planplus", "desired_curvature", "action", "desired_accel")
 
 
+class _WarmupFrame:
+  """Minimal stand-in for a camera frame.
+
+  The CUDA transform wants frame.width/height/stride/uv_offset next to the data,
+  which the tinygrad path can infer from a bare array and this one cannot.
+  """
+
+  def __init__(self, data: np.ndarray, width: int, height: int, stride: int, uv_offset: int):
+    self.data = memoryview(data)
+    self.width = width
+    self.height = height
+    self.stride = stride
+    self.uv_offset = uv_offset
+
+
 class GpuModelState(ModelStateBase):
   """CUDA/TensorRT backend for the stock modeld process.
 
@@ -34,6 +49,7 @@ class GpuModelState(ModelStateBase):
   def __init__(self, cam_w: int, cam_h: int, chestnut: bool, profile=None):
     ModelStateBase.__init__(self)
     self.chestnut = chestnut
+    self.W, self.H = cam_w, cam_h
     self.frame_drop_ratio = 0
     self.in_control = False
     self.signal_shadow = None
@@ -66,8 +82,14 @@ class GpuModelState(ModelStateBase):
     if "hidden_state" not in self.output_slices:
       raise RuntimeError(f"profile {self.profile.name} metadata has no hidden_state slice")
 
+    # Scalars are held in whatever dtype the engine actually binds. Hardcoding
+    # float32 made every real inference fail the runner's size/dtype check
+    # ("expects (1, 24, 512) float16, got float32") - the engine, not this class,
+    # decides the width.
+    engine_dtypes = dict(getattr(self.backend.vision_runner, "input_dtypes", {}) or {})
     self.npy: dict[str, np.ndarray] = {
-      k: np.zeros(shape, dtype=np.float32) for k, shape in self.input_shapes.items()
+      k: np.zeros(shape, dtype=engine_dtypes.get(k, np.float32))
+      for k, shape in self.input_shapes.items()
     }
 
     # The stock big model takes a desire pulse and a previous-feature buffer.
@@ -110,8 +132,16 @@ class GpuModelState(ModelStateBase):
   def warmup(self) -> None:
     if self._warm:
       return
-    frame_bytes = int(np.prod(self.profile.vision_shape_for(self._road_key)))
-    frames = {k: np.zeros(frame_bytes, dtype=np.uint8) for k in self._vision_input_names}
+    # The CUDA transform reads frame.width/height/stride/uv_offset, so a bare numpy
+    # array is not enough - it raised AttributeError and took the whole GPU path
+    # down on startup, since modeld always warms up before the first frame.
+    # NV12 sizing here is only for the throwaway frame; real frames carry their own
+    # geometry and their own uv_offset (0 for packed UYVY).
+    frame_bytes = self.W * self.H * 3 // 2
+    blank = np.zeros(frame_bytes, dtype=np.uint8)
+    frames = {}
+    for k in self._vision_input_names:
+      frames[k] = _WarmupFrame(blank, self.W, self.H, self.W, self.W * self.H)
     transforms = {k: np.eye(3, dtype=np.float32) for k in (self._road_key, self._wide_key)}
     inputs = {
       "desire_pulse": np.zeros(self.constants.DESIRE_LEN, dtype=np.float32),
