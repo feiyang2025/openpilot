@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import threading
+import queue
 import json
 import os
 import platform
@@ -257,6 +258,70 @@ def _packed_yuv_to_nv12(yuv_data, width, height, pixel_format='UYVY', chroma_swa
   return nv12
 
 
+# 本机(Orin)驱动在多线程并发 CUDA 调用下不稳定: 单线程 4/4 OK, 双线程并发(即使
+# 每线程实例都已串行 warmup、即使加全局锁)仍在 cudaMemcpy2D 内段错误——
+# faulthandler 指在 CUDA runtime 内部的每线程状态上。参照本机驱动 API 的其他
+# 异常(cuDeviceGet->101, cuMemAlloc->201), 结论: 这台机器的 CUDA 只保证单线程稳定。
+# 所以所有 convert 都投递到唯一的 CUDA 工作线程串行执行: 20Hz 下每帧 2-3ms,
+# 两路合计 ~6ms, 预算内, 且从未崩溃。
+_CUDA_EXECUTOR: threading.Thread | None = None
+_CUDA_QUEUE: queue.SimpleQueue = queue.SimpleQueue()
+
+
+def _cuda_worker() -> None:
+  # Cold start is the dangerous moment on this driver: the very first kernel
+  # launch after process start either fails (ret=6) or, worse, segfaults while
+  # the runtime initialises. Do a tiny allocation round-trip here, alone, before
+  # any real work is queued - and retry until it succeeds, so business calls
+  # never see the cold path.
+  import ctypes as _ct
+  cudart = _ct.CDLL('libcudart.so')
+  cudart.cudaMalloc.argtypes = [_ct.POINTER(_ct.c_void_p), _ct.c_size_t]
+  cudart.cudaMalloc.restype = _ct.c_int
+  cudart.cudaFree.argtypes = [_ct.c_void_p]
+  cudart.cudaFree.restype = _ct.c_int
+  for attempt in range(20):
+    p = _ct.c_void_p()
+    if cudart.cudaMalloc(_ct.byref(p), 4096) == 0:
+      cudart.cudaFree(p)
+      print(f'[cuda-worker] warmed up (attempt {attempt + 1})', flush=True)
+      break
+    import time as _t
+    _t.sleep(0.1)
+  while True:
+    fn, ev, box = _CUDA_QUEUE.get()
+    if fn is None:          # shutdown sentinel: leave BEFORE python tears down CUDA
+      return
+    try:
+      box.append(fn())
+    except BaseException as e:  # noqa: BLE001 - 交给调用方处理
+      box.append(e)
+    ev.set()
+
+
+def _stop_cuda_thread() -> None:
+  t = _CUDA_EXECUTOR
+  if t is not None and t.is_alive():
+    _CUDA_QUEUE.put((None, threading.Event(), []))
+    t.join(timeout=2.0)
+
+
+def run_on_cuda_thread(fn):
+  """Run fn() on the single CUDA worker thread and return its result."""
+  global _CUDA_EXECUTOR
+  if _CUDA_EXECUTOR is None or not _CUDA_EXECUTOR.is_alive():
+    _CUDA_EXECUTOR = threading.Thread(target=_cuda_worker, daemon=True, name='cuda-convert')
+    _CUDA_EXECUTOR.start()
+  ev = threading.Event()
+  box: list = []
+  _CUDA_QUEUE.put((fn, ev, box))
+  ev.wait()
+  out = box[0]
+  if isinstance(out, BaseException):
+    raise out
+  return out
+
+
 class CudaUyvyConverter:
   def __init__(self, width, height, src_w=1920, src_h=1080, dst_stride=None, y_plane_rows=None,
                layout=0, src_stride=None):
@@ -323,6 +388,26 @@ class CudaUyvyConverter:
         self._packed.packed_to_nv12_set_chroma_swap(1 if self.chroma_swap else 0)
         self.nv12_cpu = np.zeros(self.nv12_size, dtype=np.uint8)
         self._use_cuda = True
+        # Warm the CUDA runtime and the converter's device buffers NOW, serially.
+        # The buffers are thread_local and malloc'd lazily on the first convert();
+        # road and wide run as two threads, and two simultaneous first-calls hit
+        # CUDA's lazy primary-context init at once, which segfaults this driver
+        # (reproduced standalone: single-thread 4/4 ok, two threads on a barrier
+        # died inside the first convert). One dry-run per instance makes every
+        # later convert a pure memcpy/kernel launch.
+        try:
+          zero_src = np.zeros(self.src_w * self.src_h * 2, dtype=np.uint8)
+          def _warm():
+            ret = self._packed.packed_to_nv12_resize(ctypes.c_void_p(zero_src.ctypes.data),
+                                                     ctypes.c_void_p(self.nv12_cpu.ctypes.data),
+                                                     self.src_w, self.src_h, self.W, self.H,
+                                                     1 if self.flip else 0, 1 if self.chroma_swap else 0,
+                                                     self.layout, self.src_stride)
+            return ret
+          wret = run_on_cuda_thread(_warm)
+          print(f"[CudaUyvyConverter] warmup ret={wret} (CUDA runtime + buffers serialised)", flush=True)
+        except Exception as _e:
+          print(f"[CudaUyvyConverter] warmup convert failed: {type(_e).__name__}: {_e}", flush=True)
         print(f"[CudaUyvyConverter] packed CUDA kernel OK: {width}x{height} layout={'UYVY' if self.layout else 'YUYV'} chroma_swap={int(self.chroma_swap)}", flush=True)
         return
       except Exception as e:
@@ -374,21 +459,18 @@ class CudaUyvyConverter:
   def convert(self, uyvy_data):
     if self._packed is not None:
       src = np.ascontiguousarray(uyvy_data, dtype=np.uint8)
-      if self.src_w != self.W or self.src_h != self.H:
-        # resize: 源采集尺寸 (1920x1080 packed) -> 输出尺寸, 用显式源尺寸读 packed 防行距错位
+      # CUDA 调用必须单线程, 见 _CUDA_EXECUTOR 的注释
+      def _do():
         ret = self._packed.packed_to_nv12_resize(ctypes.c_void_p(src.ctypes.data),
                                                  ctypes.c_void_p(self.nv12_cpu.ctypes.data),
                                                  self.src_w, self.src_h, self.W, self.H,
                                                  1 if self.flip else 0, 1 if self.chroma_swap else 0,
                                                  self.layout, self.src_stride)
-      else:
-        ret = self._packed.packed_to_nv12(ctypes.c_void_p(src.ctypes.data),
-                                          ctypes.c_void_p(self.nv12_cpu.ctypes.data),
-                                          self.W, self.H, self.layout, self.src_stride)
-      if ret != 0:
-        print(f"[CUDA] packed_to_nv12 failed ret={ret}", flush=True)
-        return None
-      return self.nv12_cpu
+        if ret != 0:
+          print(f"[CUDA] packed_to_nv12 failed ret={ret}", flush=True)
+          return None
+        return self.nv12_cpu
+      return run_on_cuda_thread(_do)
     return self._convert_fallback(uyvy_data)
 
   def _convert_fallback(self, uyvy_data):

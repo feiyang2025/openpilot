@@ -31,6 +31,15 @@ if [ "$(uname -m)" = "aarch64" ] && [ ! -e /TICI ]; then
   export CAM_WIDTH="1344"
   export CAM_HEIGHT="760"
   export CAM_BRIGHTNESS="1.0"
+
+  # 本机(Orin)没有高通 Adreno(/dev/kgsl-3d0), 上游模型包里的 *_tinygrad.pkl 是
+  # QCOM 编译版, modeld_tinygrad 一加载就崩 FileNotFoundError。指向本机编译的
+  # tinygrad pkl(compile_modeld.py 产物, 不入库; 缺失时跑
+  # scripts/build_runtime.sh 或参照交付记录阶段 7 生成)。
+  # 这个分支同样覆盖 PC aarch64, 但 PC 上没有该 pkl 时 modeld 会明确报错, 可接受。
+  if [ -z "${COMBINED_MODEL_PKL:-}" ] && [ -f "$DIR/openpilot/selfdrive/modeld/models/driving_tinygrad.pkl" ]; then
+    export COMBINED_MODEL_PKL="$DIR/openpilot/selfdrive/modeld/models/driving_tinygrad.pkl"
+  fi
 fi
 
 # v4l2 节点号随枚举顺序漂移: 启动时按设备名解析 (ROAD=120° 广角主路 / WIDE=60° 窄角 / DRIVER=USB)
