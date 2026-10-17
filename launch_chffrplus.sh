@@ -724,6 +724,27 @@ ensure_bluez() {
 launch() {
   [ -f "$DIR/.git/index.lock" ] && rm -f "$DIR/.git/index.lock"
 
+  # 防双实例: 两个实例抢相机、/dev/shm/msgq_*, 而且第二次启动看起来像"没反应"。
+  # manager 的 cmdline 是相对路径(python3 ./manager.py), 按绝对路径 pgrep 匹配不到,
+  # 所以按 /proc/<pid>/cwd 判断归属。
+  _dup=0
+  for _p in $(pgrep -f "manager[.]py|tools/sim/fake_panda" 2>/dev/null); do
+    case "$(readlink "/proc/$_p/cwd" 2>/dev/null)" in
+      "$DIR"|"$DIR"/*) _dup=1 ;;
+    esac
+  done
+  if [ "$_dup" = "1" ]; then
+    echo "[!!] 本目录已有 openpilot 实例在运行。先 ./stop_openpilot.sh 再启动。"
+    exit 1
+  fi
+
+  # tw_camera_cfg 两种模式: 带 bring=点亮+预览(占相机, 和 op 抢帧); 无参数=仅驱动/守护(op 要的)。
+  # 预览模式挂着时 op 启动序会"没画面", 所以提前大声提醒。
+  if pgrep -a tw_camera_cfg 2>/dev/null | grep -q " bring"; then
+    echo "[cam] 警告: tw_camera_cfg 'bring'(点亮+预览)在跑, 和 op 抢相机"
+    echo "[cam] op 用法: sudo pkill tw_camera_cfg; sudo tw_camera_cfg(无参数)"
+  fi
+
   if [ -f "${DIR}/.overlay_init" ]; then
     if find "${DIR}/.git" -newer "${DIR}/.overlay_init" | grep -q . 2>/dev/null; then
       echo "${DIR} has been modified, skipping overlay update installation"
