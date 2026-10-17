@@ -64,14 +64,32 @@ ensure_pip_dep() {
 
   # Only one pip install at a time; concurrent calls from keep-alive loops
   # race on the same .pydeps directory and slow each other down.
+  #
+  # Two hard rules learned from the 2026-10-17 silent-hang incident:
+  #  - flock waits with a bounded timeout. A stale holder must never queue
+  #    launches forever with zero output.
+  #  - fd 200 is closed the moment we are done with it. Leaving it open leaks
+  #    the lock into every child spawned later in launch() (keep_alive aid/webui
+  #    inherited it), which keeps the advisory lock alive even after the shell
+  #    that owned it exits.
+  local lockfile="/tmp/ensure_pip_dep_${module}.lock"
   exec 200>"$lockfile"
-  flock 200 || return 1
+  if ! flock -w 120 200; then
+    echo "[ensure_pip_dep] lock busy after 120s; deferring $module" >> /tmp/bootstrap.log
+    exec 200>&-
+    return 1
+  fi
+
+  local _ret=0
 
   # Re-check after acquiring lock in case another instance just installed it.
-  [ -d "$pydeps/$module" ] && return 0
+  if [ -d "$pydeps/$module" ]; then
+    exec 200>&-
+    return 0
+  fi
 
   if ! PYTHONPATH="$py_path" "$py" -c "import $module" 2>/dev/null; then
-    [ -d "$pydeps" ] || mkdir -p "$pydeps" 2>/dev/null || return 1
+    [ -d "$pydeps" ] || mkdir -p "$pydeps" 2>/dev/null
     if ! "$py" -c "import pip" 2>/dev/null; then
       # Device network cannot reach bootstrap.pypa.io, so prefer Aliyun mirror.
       curl -fsSL "${GET_PIP_URL:-https://mirrors.aliyun.com/pypi/get-pip.py}" -o /tmp/get-pip.py 2>/dev/null && \
@@ -81,9 +99,12 @@ ensure_pip_dep() {
     # the get-pip bootstrap above prefers mirrors.aliyun.com. Override with PIP_INDEX_URL.
     local index_url="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
     local tmpdir=$(pip_scratch_dir)
-    TMPDIR="$tmpdir" PYTHONPATH="$py_path" "$py" -m pip install --no-cache-dir --index-url="$index_url" --target="$pydeps" "$module" >> /tmp/bootstrap.log 2>&1 || return 1
+    TMPDIR="$tmpdir" PYTHONPATH="$py_path" "$py" -m pip install --no-cache-dir --index-url="$index_url" --target="$pydeps" "$module" >> /tmp/bootstrap.log 2>&1 || _ret=1
     rm -rf "$tmpdir"/pip-* 2>/dev/null || true
   fi
+
+  exec 200>&-
+  return $_ret
 }
 
 # Waits up to $1 seconds for a working DNS resolver. Returns 0 as soon as a
@@ -162,12 +183,13 @@ ensure_pip_deps() {
   local pydeps="$PYDEPS_DIR"
   local py=$(find_python python3.12) || return 1
   local py_path=$(setup_python_path "$DIR")
-  local lockfile="/tmp/ensure_pip_deps.lock"
-  shift 0
 
-  exec 200>"$lockfile"
-  flock 200 || return 1
-
+  # Probe BEFORE touching the lock. Probing is read-only, and the common case is
+  # "everything present". Taking the lock first is what produced the 2026-10-17
+  # silent hang: an earlier boot leaked the locked fd 200 into keep_alive
+  # children (aid/webui), whose inherited open file description kept the
+  # advisory lock alive after their parent died, so every later launch queued
+  # forever on `flock 200` with zero output.
   local missing=()
   for module in "$@"; do
     if ! PYTHONPATH="$py_path" "$py" -c "import $module" 2>/dev/null; then
@@ -201,22 +223,48 @@ ensure_pip_deps() {
       "$py" /tmp/get-pip.py --target="$pydeps" --no-warn-script-location >> /tmp/bootstrap.log 2>&1 || return 1
   fi
 
-  # The device cannot reach pypi.org (TLS dies with SSL_ERROR_SYSCALL); same reason
-  # the get-pip bootstrap below prefers mirrors.aliyun.com. Override with PIP_INDEX_URL.
-  local index_url="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
+  # Serialize installs, but never unbounded: a stale holder must defer this
+  # install to the next keep_alive cycle, not hang the whole launch silently.
+  local lockfile="/tmp/ensure_pip_deps.lock"
+  exec 200>"$lockfile"
+  if ! flock -w 120 200; then
+    echo "[ensure_pip_deps] lock busy after 120s; deferring install" >> /tmp/bootstrap.log
+    exec 200>&-
+    return 1
+  fi
+
+  # Re-check after acquiring lock in case another instance just installed it.
+  local still_missing=()
+  for module in "${missing[@]}"; do
+    if ! PYTHONPATH="$py_path" "$py" -c "import $module" 2>/dev/null; then
+      still_missing+=("$module")
+    fi
+  done
+  if [ ${#still_missing[@]} -eq 0 ]; then
+    exec 200>&-
+    return 0
+  fi
+
   # --upgrade makes this a real repair path: a package directory left behind by an
   # interrupted download makes plain install report "already exists" and skip the
   # copy, so the import check would keep failing and the retry loop would spin.
   # --no-cache-dir keeps the wheel cache off the almost-full rootfs (90% used), and
   # TMPDIR moves pip's unpacking off the 150 MB tmpfs.
   local tmpdir=$(pip_scratch_dir)
-  if ! TMPDIR="$tmpdir" PYTHONPATH="$py_path" "$py" -m pip install --no-cache-dir --upgrade --index-url="$index_url" --target="$pydeps" "${requirements[@]}" >> /tmp/bootstrap.log 2>&1; then
+  local _ret=0
+  if ! TMPDIR="$tmpdir" PYTHONPATH="$py_path" "$py" -m pip install --no-cache-dir --upgrade --index-url="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" --target="$pydeps" "${requirements[@]}" >> /tmp/bootstrap.log 2>&1; then
     echo "[ensure_pip_deps] install failed; will retry on next keep_alive cycle" >> /tmp/bootstrap.log
-    rm -rf "$tmpdir"/pip-* 2>/dev/null || true
-    return 1
+    _ret=1
   fi
   rm -rf "$tmpdir"/pip-* 2>/dev/null || true
-  echo "[ensure_pip_deps] installed: ${requirements[*]}" >> /tmp/bootstrap.log
+
+  # Release fd 200 before returning: every child spawned after this point in
+  # launch() inherits open fds, and an inherited locked fd keeps the advisory
+  # lock alive even after this shell exits - the exact leak that caused today's
+  # silent hang.
+  exec 200>&-
+  [ $_ret -eq 0 ] && echo "[ensure_pip_deps] installed: ${requirements[*]}" >> /tmp/bootstrap.log
+  return $_ret
 }
 
 # Probe form is "<import>" or "<import>; assert <expr>". The assertion matters: a
