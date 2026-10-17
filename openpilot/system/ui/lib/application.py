@@ -1055,11 +1055,14 @@ class GuiApplication(GuiApplicationExt):
 
   @staticmethod
   def _default_width() -> int:
-    return 2160 if GuiApplication.big_ui() else 536
+    # BIG UI design is 2160x1080, but on a bench display (1920x1080) an unscaled
+    # 2160-wide window overflows the screen and reads as "UI bigger than the
+    # screen". The launcher already exports UI_WIDTH/UI_HEIGHT; make them real.
+    return int(int(os.getenv("UI_WIDTH", "2160"))) if GuiApplication.big_ui() else 536
 
   @staticmethod
   def _default_height() -> int:
-    return 1080 if GuiApplication.big_ui() else 240
+    return int(int(os.getenv("UI_HEIGHT", "1080"))) if GuiApplication.big_ui() else 240
 
   @staticmethod
   def big_ui() -> bool:

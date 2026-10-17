@@ -52,6 +52,9 @@ export DRIVER_CAM="${DRIVER_CAM:-}"
 
 # PC 上跑大 UI (C4 那套是小屏; PC 需要 BIG=1 才是大画布)
 export BIG="1"
+# SCALE=1.0 关掉 PC 自动缩放(否则 application 会先开临时窗量显示器再缩放)。
+# UI 实际窗口 = UI_WIDTH x UI_HEIGHT(application.py 现在会读这两个 env);
+# 台架屏是 1920x1080, UI 设计稿是 2160x1080, 不锁 1920 宽窗口会横向溢出屏幕。
 export SCALE="1.0"
 export UI_WIDTH="1920"
-export UI_HEIGHT="1048"
+export UI_HEIGHT="1080"

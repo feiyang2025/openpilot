@@ -827,6 +827,11 @@ struct SelfdriveState {
   experimentalMode @10 :Bool;
   personality @11 :LongitudinalPersonality;
 
+  # total km driven while enabled; carrot_serv reads it for the navi/HUD panel.
+  # Upstream openpilot carries the same field; this fork's cereal predates it,
+  # and carrot_serv dynamically watch it → schema error → carrot_man broadcast loop dead.
+  distanceTraveled @14 :Float32;
+
   enum AudibleAlert {
     none @0;
 
