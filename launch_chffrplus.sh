@@ -922,7 +922,7 @@ launch() {
     echo "[road] fake panda disabled; waiting for real panda"
   fi
 
-  cd openpilot/system/manager
+  cd "$DIR/openpilot/system/manager"
   if [ ! -f "$DIR/prebuilt" ]; then
     if ! ./build.py; then
       echo "[warn] build.py failed, UI resources may be missing"
@@ -930,9 +930,46 @@ launch() {
       touch "$DIR/prebuilt"
     fi
   fi
-  ./manager.py
 
-  while true; do sleep 1; done
+  # Supervise manager for the whole launch lifetime.
+  #
+  # Context (2026-10-17): several UI/webui paths write DoReboot ("重启设备" in
+  # Software/Device pages, /api/recalibrate, model-select with needs_reset_cal).
+  # manager.py honors it by exiting its loop *after killing every daemon* and
+  # then calling HARDWARE.reboot() - which on this Jetson (base.py) only prints
+  # "REBOOT!" and does nothing. Result: the entire stack dies, the launcher shell
+  # used to fall into `while true; do sleep 1; done`, the screen keeps showing
+  # the last UI frame, and every setting toggle looks frozen gray. Turning
+  # DoReboot into a stack relaunch inside the launcher gives the reset button its
+  # intended semantics without touching the read-only rootfs.
+  while true; do
+    ./manager.py
+    local _mode=""
+    _mode="$("$PY" -c 'from openpilot.common.params import Params
+p = Params()
+mode = "none"
+if p.get_bool("DoReboot"): mode = "reboot"
+elif p.get_bool("DoShutdown"): mode = "shutdown"
+elif p.get_bool("DoUninstall"): mode = "uninstall"
+print(mode)' 2>/dev/null)"
+    case "$_mode" in
+      shutdown|uninstall)
+        echo "[mgr] exit requested ($_mode); launcher stops"
+        break
+        ;;
+      reboot)
+        echo "[mgr] DoReboot requested - clearing flag and restarting the stack"
+        "$PY" -c 'from openpilot.common.params import Params; Params().put_bool("DoReboot", False)' 2>/dev/null
+        sleep 2
+        continue
+        ;;
+      *)
+        echo "[mgr] manager exited without a shutdown flag (rc=$?); restarting in 5s"
+        sleep 5
+        continue
+        ;;
+    esac
+  done
 }
 
 launch

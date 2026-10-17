@@ -12,6 +12,7 @@ from openpilot.cereal import messaging, log, custom
 from opendbc.car.structs import car
 from opendbc.sunnypilot.car.interfaces import get_steer_rail_schedule
 from openpilot.common.params import Params
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.display import OnroadBrightness
 from openpilot.sunnypilot.models.helpers import ACTIVE_BUNDLE_KEYS, get_active_source
 from openpilot.sunnypilot import jetlink_adapter
@@ -202,6 +203,29 @@ class UIStateSP:
     if CP_SP_bytes is not None:
       self.CP_SP = messaging.log_from_bytes(CP_SP_bytes, custom.CarParamsSP)
       self.has_icbm = self.CP_SP.intelligentCruiseButtonManagementAvailable and self.params.get_bool("IntelligentCruiseButtonManagement")
+    self._log_gate_state()
+
+  _gate_log_seen: str = ""
+  _gate_log_skips: int = 0
+
+  def _log_gate_state(self) -> None:
+    # Diagnostics for the settings-menu gray/gate bug hunt (2026-10-17): the UI
+    # process's internal view of the car params is data that no external tool can
+    # see, so we log it from here. Rate limited to once per 10 s to keep the
+    # swaglog rotation sane; re-emit immediately whenever a value flips so every
+    # transition is recorded.
+    sig = (self.CP.carFingerprint if self.CP is not None else "None",
+           self.CP_SP is not None,
+           self.has_longitudinal_control,
+           self.has_icbm,
+           self.started)
+    sig_s = str(sig)
+    self._gate_log_skips += 1
+    if sig_s != self._gate_log_seen or self._gate_log_skips >= 50:
+      self._gate_log_seen = sig_s
+      self._gate_log_skips = 0
+      cloudlog.warning(f"UIState gate: CP={sig[0]!r} CP_SP={sig[1]} has_long={sig[2]} "
+                       f"has_icbm={sig[3]} started={sig[4]}")
     # the EPS rail the torque bar normalizes against, per car and per speed
     self._steer_rail_schedule = get_steer_rail_schedule(self.CP) if self.CP is not None else None
 

@@ -5,6 +5,7 @@ import time
 from openpilot.cereal import messaging
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.common.realtime import Priority, config_realtime_process, get_available_cores, set_core_affinity
+from openpilot.common.swaglog import cloudlog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.main import MainLayout
 from openpilot.selfdrive.ui.mici.layouts.main import MiciMainLayout
@@ -32,6 +33,15 @@ def resolve_ui_cores() -> list[int]:
 def main():
   # above plannerd and radard
   config_realtime_process(0, Priority.CTRL_HIGH)
+
+  # temporary diagnostics 2026-10-17: someone SIGINTs this process ~60s after
+  # start; log receipt so the killer loses its anonymity in the swaglog.
+  import signal
+  def _sig_observe(signum, frame):
+    cloudlog.warning(f"ui received signal {signum} (SIGINT=2) at boot+{time.monotonic():.0f}s")
+    raise SystemExit(1)
+  signal.signal(signal.SIGINT, _sig_observe)
+  signal.signal(signal.SIGTERM, _sig_observe)
 
   gui_app.init_window("UI")
   if BIG_UI:
