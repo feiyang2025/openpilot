@@ -196,6 +196,15 @@ class TestParamEndpoints(unittest.IsolatedAsyncioTestCase):
     self.client = TestClient(TestServer(self.app))
     await self.client.start_server()
 
+    # The native store is process-global here (a prefix cannot move libparams
+    # once it has been opened), so start every case from the same off state
+    # instead of inheriting whatever the previous case left behind.
+    from openpilot.common.params import Params
+    store = Params()
+    for key in ('ExperimentalMode', 'ExperimentalModeConfirmed', 'SafeMode', 'SafeModeBackup',
+                'IsOnroad', 'IsOffroad'):
+      store.remove(key)
+
   async def asyncTearDown(self):
     # This class shares one persistent store across tests inside the prefix,
     # and it may run on a real device. A leaked SafeMode lock would refuse the
