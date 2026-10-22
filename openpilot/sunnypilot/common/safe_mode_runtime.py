@@ -13,13 +13,27 @@ from openpilot.sunnypilot.common.safe_mode import (
   SAFE_MODE_MANAGED_KEYS,
   SAFE_MODE_PARAM,
   backup_entry,
+  can_enter,
   can_restore,
   load_backup,
   missing_backup_keys,
   restore_plan,
   safe_value,
   serialize_backup,
+  transition_block_reason,
 )
+
+
+class SafeModeError(Exception):
+  """A Safe Mode transition that was refused or could not be confirmed.
+
+  ``status`` is the HTTP status the API should answer with, the same
+  convention ``ModeStateError`` uses.
+  """
+
+  def __init__(self, reason: str, status: int = 403):
+    super().__init__(reason)
+    self.status = status
 
 
 def _get(params, key: str) -> str | None:
@@ -182,3 +196,96 @@ def enforce_safe_mode(params, frame: int) -> bool:
 def backup_document(params) -> dict[str, Any]:
   """The current backup document, for display and tests."""
   return load_backup(_get(params, SAFE_MODE_BACKUP_PARAM))
+
+
+def _put_bool(params, key: str, value: bool) -> bool:
+  """Write a BOOL key. ``put`` with a string would raise a type mismatch."""
+  try:
+    params.put_bool(key, bool(value), block=True)
+    return True
+  except Exception:
+    return False
+
+
+def _road_flag(params, key: str) -> bool | None:
+  """A road-state flag, or None when the store cannot answer.
+
+  None is not "offroad": it means the state is unknown, and an unknown state
+  must not authorise a write that changes how the car steers.
+  """
+  try:
+    return bool(params.get_bool(key))
+  except Exception:
+    return None
+
+
+def road_state(params) -> tuple[bool | None, bool | None]:
+  """``(is_onroad, is_offroad)``, with None where the store cannot answer."""
+  return _road_flag(params, "IsOnroad"), _road_flag(params, "IsOffroad")
+
+
+def safe_mode_status(params, *, is_onroad: bool | None = None,
+                     is_offroad: bool | None = None) -> dict[str, Any]:
+  """Everything a caller needs to render Safe Mode without guessing."""
+  if is_onroad is None or is_offroad is None:
+    onroad, offroad = road_state(params)
+    is_onroad = is_onroad if is_onroad is not None else onroad
+    is_offroad = is_offroad if is_offroad is not None else offroad
+
+  active = is_safe_mode(params)
+  backup = backup_document(params)
+  return {
+    "active": active,
+    "backupKeys": len(backup),
+    "isOnroad": is_onroad,
+    "isOffroad": is_offroad,
+    "canEnter": (not active) and can_enter(is_onroad),
+    "canRestore": active and is_onroad is not None and is_offroad is not None
+                  and can_restore(is_onroad, is_offroad),
+    "reason": transition_block_reason(active, is_onroad, is_offroad),
+  }
+
+
+def set_safe_mode(params, enabled: bool, *, is_onroad: bool | None = None,
+                  is_offroad: bool | None = None) -> dict[str, Any]:
+  """Switch Safe Mode on or off and return the resulting status.
+
+  Raises ``SafeModeError`` when the transition is refused, or when the store
+  does not read back what was just written. Idempotent: asking for the state
+  that already holds is a no-op rather than an error, so a UI that re-sends
+  its toggle cannot wedge the flag.
+  """
+  before = safe_mode_status(params, is_onroad=is_onroad, is_offroad=is_offroad)
+  if bool(enabled) == before["active"]:
+    return before
+
+  reason = before["reason"]
+  if reason:
+    raise SafeModeError(reason, 403)
+
+  change_wanted = bool(enabled)
+
+  if change_wanted:
+    # Take the backup and force the knobs before flipping the flag. The
+    # enforcer in controlsd re-applies whatever the flag says, so a flag
+    # without a backup would force values that can never be undone.
+    apply_safe_mode(params, ensure_backup=True)
+    if not _put_bool(params, SAFE_MODE_PARAM, True):
+      raise SafeModeError(f"Could not write {SAFE_MODE_PARAM}.", 500)
+  else:
+    restore_safe_mode(params)
+    if _get(params, SAFE_MODE_BACKUP_PARAM) is not None:
+      # The restore did not run, so clearing the flag would strand the
+      # forced values with no record of what they used to be.
+      raise SafeModeError("Could not restore the backed-up values; Safe Mode is still on.", 500)
+    if not _remove(params, SAFE_MODE_PARAM):
+      raise SafeModeError(f"Could not clear {SAFE_MODE_PARAM}.", 500)
+
+  # A write that did not stick is the failure mode this guard exists for:
+  # the caller must not be told Safe Mode is on when the control loop will
+  # not see it.
+  stored = read_bool(params, SAFE_MODE_PARAM, not change_wanted)
+  if stored != change_wanted:
+    raise SafeModeError(f"{SAFE_MODE_PARAM} did not read back as {change_wanted}.", 500)
+
+  return safe_mode_status(params, is_onroad=is_onroad, is_offroad=is_offroad)

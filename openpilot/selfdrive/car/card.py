@@ -29,6 +29,7 @@ from openpilot.sunnypilot.carrot.xiaoge.xiaoge_vision import (
   apply_xiaoge_vision_result,
   parse_xiaoge_vision_payload,
 )
+from openpilot.sunnypilot.common.mode_state_runtime import experimental_mode_requested
 
 REPLAY = "REPLAY" in os.environ
 
@@ -195,7 +196,7 @@ class Car:
     self.v_cruise_helper = VCruiseCarrot(self.CP, self.CP_SP)
 
     self.is_metric = self.params.get_bool("IsMetric")
-    self.experimental_mode = self.params.get_bool("ExperimentalMode")
+    self.experimental_mode = experimental_mode_requested(self.params)
     self.carrot_enabled = self.params.get_bool("CarrotEnabled")
     self.carrot_navi_v2_enabled = self.params.get_bool("CarrotNaviV2Enabled")
     self.carrot_nav_lane_guide_block = self.params.get_bool("CarrotNavLaneGuideBlockEnabled")
@@ -390,7 +391,7 @@ class Car:
   def params_thread(self, evt):
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
-      self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
+      self.experimental_mode = experimental_mode_requested(self.params) and self.CP.openpilotLongitudinalControl
       self.carrot_enabled = self.params.get_bool("CarrotEnabled")
       # These two are the *behaviour* switches for the carrot navi path, not
       # process gates: carrot_navi (TCP 7714) is always_run, so flipping them must
