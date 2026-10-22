@@ -87,6 +87,7 @@ async def api_param_set(request: web.Request) -> web.Response:
   # than a value: it needs the parked precondition, a backup, and a read-back.
   if name == "SafeMode":
     return _set_safe_mode(params, body)
+
   # Read the old value before writing so the history can show what it replaced.
   before = get_param_values(params, [name] if isinstance(name, str) else []).get(name)
 

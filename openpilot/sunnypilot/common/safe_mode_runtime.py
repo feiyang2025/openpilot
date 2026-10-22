@@ -12,6 +12,7 @@ from openpilot.sunnypilot.common.safe_mode import (
   SAFE_MODE_BACKUP_PARAM,
   SAFE_MODE_MANAGED_KEYS,
   SAFE_MODE_PARAM,
+  SAFE_MODE_REMOVE_KEYS,
   backup_entry,
   can_enter,
   can_restore,
@@ -41,6 +42,12 @@ def _get(params, key: str) -> str | None:
 
   Returns None for a key the store does not know about, which is the same
   answer as "not set": Safe Mode must not act on it.
+
+  The store hands back decoded Python values, not text: a BOOL key gives a
+  bool and a JSON key gives a dict. Both have to be normalised here, and the
+  JSON case is the one that bit: ``str(dict)`` is a Python repr with single
+  quotes, which no JSON parser accepts, so the backup document read back as
+  empty and Safe Mode refused to record anything.
   """
   try:
     value = params.get(key)
@@ -50,6 +57,11 @@ def _get(params, key: str) -> str | None:
     return None
   if isinstance(value, bytes):
     return value.decode("utf-8", errors="ignore")
+  if isinstance(value, bool):
+    return "1" if value else "0"
+  if isinstance(value, (dict, list)):
+    import json
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
   return str(value)
 
 
@@ -79,6 +91,38 @@ def _default(params, key: str) -> str | None:
   return str(value)
 
 
+def _coerce(params, key: str, text: str):
+  """The value to hand ``put`` so the store's own type check passes.
+
+  ``Params.put`` refuses a str for a BOOL, INT, FLOAT, JSON or BYTES key, and
+  the refusal surfaces as a TypeError. A bare str therefore made every forced
+  value and the entire backup document fail silently: the only write that
+  survived was ``remove``, which is how Safe Mode managed to delete the steer
+  knobs without recording what they were. The unit tests missed it because a
+  fake store accepts any Python object.
+
+  The registered type is read per key and the text is converted to match. A
+  key the store does not describe is passed through unchanged, which is what
+  a string key wants anyway.
+  """
+  try:
+    kind = getattr(params.get_type(key), "name", "")
+  except Exception:
+    kind = ""
+  if kind == "BOOL":
+    return text in ("1", "True", "true")
+  if kind == "INT":
+    return int(float(text))
+  if kind == "FLOAT":
+    return float(text)
+  if kind == "JSON":
+    import json
+    return json.loads(text)
+  if kind == "BYTES":
+    return text.encode("utf-8")
+  return text
+
+
 def _put(params, key: str, value: str) -> bool:
   """Write a key, tolerating a store that does not know it.
 
@@ -86,7 +130,16 @@ def _put(params, key: str, value: str) -> bool:
   car has to cycle for the change to take effect.
   """
   try:
-    params.put(key, value, block=True)
+    params.put(key, _coerce(params, key, value), block=True)
+    return True
+  except Exception:
+    return False
+
+
+def _remove(params, key: str) -> bool:
+  """Remove a key, tolerating a store that does not know it."""
+  try:
+    params.remove(key)
     return True
   except Exception:
     return False
@@ -97,11 +150,28 @@ def is_safe_mode(params) -> bool:
   return read_bool(params, SAFE_MODE_PARAM, False)
 
 
-def _write_backup(params, backup: dict) -> None:
-  try:
-    params.put(SAFE_MODE_BACKUP_PARAM, serialize_backup(backup), block=True)
-  except Exception:
-    pass
+def _write_backup(params, backup: dict) -> bool:
+  """Store the backup document. Returns whether the store really kept it."""
+  if not _put(params, SAFE_MODE_BACKUP_PARAM, serialize_backup(backup)):
+    return False
+  return bool(backup_document(params))
+
+
+def _ensure_backup(params) -> bool:
+  """Make sure every managed key is recorded. True when a record exists.
+
+  Nothing may be forced until this holds: the enforcer re-applies whatever the
+  flag says, and a forced value with no record of what it replaced cannot be
+  undone by the driver.
+  """
+  backup = load_backup(_get(params, SAFE_MODE_BACKUP_PARAM))
+  missing = missing_backup_keys(backup)
+  if not missing:
+    return True
+  for key in missing:
+    current = _get(params, key)
+    backup[key] = backup_entry(current is not None, current)
+  return _write_backup(params, backup)
 
 
 def apply_safe_mode(params, *, ensure_backup: bool = True) -> bool:
@@ -113,17 +183,21 @@ def apply_safe_mode(params, *, ensure_backup: bool = True) -> bool:
   changed = False
 
   if ensure_backup:
-    backup = load_backup(_get(params, SAFE_MODE_BACKUP_PARAM))
-    missing = missing_backup_keys(backup)
-    if missing:
-      for key in missing:
-        current = _get(params, key)
-        backup[key] = backup_entry(current is not None, current)
-      _write_backup(params, backup)
-      changed = True
+    missing = missing_backup_keys(load_backup(_get(params, SAFE_MODE_BACKUP_PARAM)))
+    if not _ensure_backup(params):
+      # Forcing anything now would delete or overwrite a user value with no
+      # way back, so this is a refusal rather than a partial apply.
+      return False
+    changed = bool(missing)
 
-  backup = load_backup(_get(params, SAFE_MODE_BACKUP_PARAM))
+  for key in SAFE_MODE_REMOVE_KEYS:
+    if _get(params, key) is not None:
+      if _remove(params, key):
+        changed = True
   for key in SAFE_MODE_MANAGED_KEYS:
+    if key in SAFE_MODE_REMOVE_KEYS:
+      # Handled above: these are removed, never written (see safe_mode.py).
+      continue
     target = safe_value(key,
                         current=_get(params, key),
                         stock=_stock(params, key),
@@ -270,6 +344,11 @@ def set_safe_mode(params, enabled: bool, *, is_onroad: bool | None = None,
     # enforcer in controlsd re-applies whatever the flag says, so a flag
     # without a backup would force values that can never be undone.
     apply_safe_mode(params, ensure_backup=True)
+    if not backup_document(params):
+      # The store refused the record. Leaving the flag clear is the only safe
+      # end state: turning Safe Mode on without one is how the steer knobs
+      # get deleted with nothing to restore them from.
+      raise SafeModeError("Could not record the values Safe Mode would replace; nothing was forced.", 500)
     if not _put_bool(params, SAFE_MODE_PARAM, True):
       raise SafeModeError(f"Could not write {SAFE_MODE_PARAM}.", 500)
   else:

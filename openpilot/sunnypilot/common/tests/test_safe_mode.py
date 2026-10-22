@@ -1,7 +1,9 @@
+import json
 import unittest
 
 from openpilot.sunnypilot.common.safe_mode import (
   SAFE_MODE_MANAGED_KEYS,
+  SAFE_MODE_REMOVE_KEYS,
   UNKNOWN_STOCK,
   backup_entry,
   can_enter,
@@ -29,8 +31,66 @@ class UnknownKeyName(Exception):
   """Mirrors openpilot.common.params.UnknownKeyName without importing it."""
 
 
+class _Kind:
+  """Stands in for ParamKeyType, which carries its own name."""
+
+  def __init__(self, name: str):
+    self.name = name
+
+
+# The registered types of the keys these tests touch, copied from params_keys.h.
+# Spelled out for the same reason the real store has them: put() refuses a
+# value whose type does not match, and a fake that accepts anything hides
+# exactly the bug this table prevents. It did: a backup written as a str into
+# a JSON key failed silently on the device and the fake never noticed.
+KEY_TYPES = {
+  "ExperimentalMode": "BOOL",
+  "ExperimentalModeConfirmed": "BOOL",
+  "LongitudinalPersonality": "INT",
+  "ForceAutoTune": "BOOL",
+  "ForceAutoTuneOff": "BOOL",
+  "SteerRatio": "FLOAT",
+  "SteerDelay": "FLOAT",
+  "SteerFriction": "FLOAT",
+  "SteerKP": "FLOAT",
+  "SteerLatAccel": "FLOAT",
+  "UseAutoSteerDelay": "BOOL",
+  "CustomSR": "INT",
+  "LaneCenteringEnabled": "BOOL",
+  "LaneCenterOffset": "FLOAT",
+  "LaneCenteringE2EAuthority": "BOOL",
+  "NNFFMode": "INT",
+  "FlmRuntimeOverridesEnabled": "BOOL",
+  "LongitudinalFollowingProfileEnabled": "BOOL",
+  "WeatherOffsetsEnabled": "BOOL",
+  "VisionSpeedLimitEnabled": "BOOL",
+  "VisionSpeedLimitLowLimitFilter": "BOOL",
+  "LeadDuplicateGuardEnabled": "BOOL",
+  "ModelLeadTrajectoryEnabled": "BOOL",
+  "CscCurvatureLearningEnabled": "BOOL",
+  "SafeMode": "BOOL",
+  "SafeModeBackup": "JSON",
+  "IsOnroad": "BOOL",
+  "IsOffroad": "BOOL",
+}
+
+
+def _matches(kind: str, value) -> bool:
+  if kind == "BOOL":
+    return isinstance(value, bool)
+  if kind == "INT":
+    return isinstance(value, int) and not isinstance(value, bool)
+  if kind == "FLOAT":
+    return isinstance(value, float)
+  if kind == "JSON":
+    return isinstance(value, dict)
+  if kind == "STRING":
+    return isinstance(value, str)
+  return False
+
+
 class FakeParams:
-  """A Params stand-in with the real signatures.
+  """A Params stand-in with the real signatures and the real type checks.
 
   ``drop_writes`` models a store that accepts a write and does not keep it,
   which is the failure the read-back in ``set_safe_mode`` exists to catch.
@@ -54,7 +114,22 @@ class FakeParams:
 
   def get(self, key: str, block: bool = False, return_default: bool = False):
     self._check(key)
-    return self.values.get(key)
+    raw = self.values.get(key)
+    if raw is None:
+      return None
+    # The real store decodes to Python values; a fake that hands back the raw
+    # text hides every caller that forgets to convert. That is how a JSON
+    # backup read back as str(dict) and quietly counted as absent.
+    kind = KEY_TYPES.get(key)
+    if kind == "BOOL":
+      return raw == "1"
+    if kind == "INT":
+      return int(raw)
+    if kind == "FLOAT":
+      return float(raw)
+    if kind == "JSON":
+      return json.loads(raw)
+    return raw
 
   def get_bool(self, key: str, block: bool = False) -> bool:
     self._check(key)
@@ -64,11 +139,26 @@ class FakeParams:
     self._check(key)
     return self.stock.get(key)
 
+  def get_type(self, key: str) -> _Kind:
+    self._check(key)
+    kind = KEY_TYPES.get(key)
+    if kind is None:
+      raise UnknownKeyName(key)
+    return _Kind(kind)
+
   def put(self, key: str, value, block: bool = False) -> None:
     self._check(key)
     if key in self.drop_writes:
       return
-    self.values[key] = str(value)
+    kind = self.get_type(key).name
+    if not _matches(kind, value):
+      raise TypeError(f"Type mismatch while writing param {key}: {type(value)} for {kind}")
+    if kind == "JSON":
+      self.values[key] = json.dumps(value, separators=(",", ":"), sort_keys=True)
+    elif kind == "BOOL":
+      self.values[key] = "1" if value else "0"
+    else:
+      self.values[key] = str(value)
 
   def put_bool(self, key: str, dat: bool, block: bool = False) -> None:
     self._check(key)
@@ -109,6 +199,12 @@ class TestSafeValue(unittest.TestCase):
       self.assertTrue(key)
     # A whitelist covering everything would defeat the purpose.
     self.assertLess(len(SAFE_MODE_MANAGED_KEYS), 40)
+
+  def test_every_removed_key_is_managed(self):
+    # The runtime only backs up managed keys; a removal outside the managed
+    # set would restore from nothing.
+    for key in SAFE_MODE_REMOVE_KEYS:
+      self.assertIn(key, SAFE_MODE_MANAGED_KEYS)
 
 
 class TestCanRestore(unittest.TestCase):
@@ -190,6 +286,32 @@ class TestApplyAndRestore(unittest.TestCase):
     params = FakeParams({"ExperimentalMode": "1"}, unknown=("NNFFMode",))
     self.assertTrue(apply_safe_mode(params))
     self.assertEqual(params.values["ExperimentalMode"], "0")
+
+  def test_the_steer_knobs_are_removed_not_written(self):
+    # These knobs are "0.0 means not set" parameters; writing 0.0 would be
+    # read back as a present-but-invalid value, so they are removed.
+    params = FakeParams({"SteerRatio": "16.8", "SteerFriction": "0.3"})
+    self.assertTrue(apply_safe_mode(params))
+    self.assertNotIn("SteerRatio", params.values)
+    self.assertNotIn("SteerFriction", params.values)
+    # And the originals are in the backup.
+    backup = backup_document(params)
+    self.assertEqual(backup["SteerRatio"], {"present": True, "value": "16.8"})
+    self.assertEqual(backup["SteerFriction"], {"present": True, "value": "0.3"})
+
+  def test_a_removed_knob_restores_to_its_original_value(self):
+    params = FakeParams({"SteerRatio": "16.8"})
+    apply_safe_mode(params)
+    self.assertTrue(restore_safe_mode(params))
+    self.assertEqual(params.values["SteerRatio"], "16.8")
+
+  def test_the_enforcer_reapplies_the_removal(self):
+    params = FakeParams({"SafeMode": "1", "SteerRatio": "16.8"})
+    apply_safe_mode(params)
+    # Someone (a learner process) writes the ratio back mid-drive.
+    params.values["SteerRatio"] = "17.2"
+    self.assertTrue(enforce_safe_mode(params, 20))
+    self.assertNotIn("SteerRatio", params.values)
 
   def test_restore_puts_the_values_back(self):
     params = FakeParams({"ExperimentalMode": "1", "NNFFMode": "2"})
@@ -348,6 +470,30 @@ class TestSetSafeMode(unittest.TestCase):
 
     self.assertEqual(caught.exception.status, 500)
     self.assertTrue(is_safe_mode(params))
+
+  def test_a_store_that_refuses_the_backup_forces_nothing(self):
+    """The device bug this regression is named after.
+
+    The backup document was written as a str into a JSON key. The store
+    refused it, the refusal was swallowed, and the only write that survived
+    was the steer-knob removal - a destructive change with nothing left to
+    restore from. Nothing may be forced before the record exists.
+    """
+
+    class NoJson(FakeParams):
+      def put(self, key: str, value, block: bool = False) -> None:
+        if self.get_type(key).name == "JSON":
+          raise TypeError("this store refuses json")
+        super().put(key, value, block)
+
+    params = NoJson({"NNFFMode": "2", "SteerRatio": "16.8"})
+    with self.assertRaises(SafeModeError) as caught:
+      set_safe_mode(params, True)
+
+    self.assertEqual(caught.exception.status, 500)
+    self.assertFalse(is_safe_mode(params))
+    self.assertEqual(params.values["NNFFMode"], "2")
+    self.assertEqual(params.values["SteerRatio"], "16.8")
 
   def test_status_explains_a_refusal_without_raising(self):
     parked = safe_mode_status(FakeParams({}), is_onroad=False, is_offroad=True)
