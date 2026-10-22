@@ -94,6 +94,13 @@ def manager_init() -> None:
   except PermissionError:
     print(f"WARNING: failed to make {Paths.shm_path()}")
 
+  # Heartbeat files of processes that no longer exist would otherwise pile up
+  # in /dev/shm across restarts: the manager only reads the pids it watches,
+  # so nothing else would ever remove them.
+  from openpilot.common.watchdog import sweep_stale_heartbeats
+  if swept := sweep_stale_heartbeats():
+    cloudlog.info(f"removed {swept} stale watchdog heartbeat file(s)")
+
   # set params
   serial = HARDWARE.get_serial()
   params.put("Version", build_metadata.openpilot.version, block=True)

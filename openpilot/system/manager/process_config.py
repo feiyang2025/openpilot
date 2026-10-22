@@ -11,6 +11,12 @@ from openpilot.system.manager.process import PythonProcess, NativeProcess, Daemo
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.swaglog import cloudlog
 
+# A process that is alive but has stopped making progress is not caught by
+# restart_if_crash. These are the thresholds for the processes that are
+# watched. The control chain (controlsd, selfdrived, plannerd) is never
+# watched: restarting it leaves a gap in the control output.
+UI_WATCHDOG_MAX_DT = int(os.getenv("UI_WATCHDOG_MAX_DT", "10"))
+
 from openpilot.common.dm import is_dm_disabled
 from openpilot.sunnypilot.mapd.mapd_manager import MAPD_PATH
 from openpilot.sunnypilot import jetlink_adapter
@@ -286,7 +292,8 @@ procs = [
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", dm_process, enabled=(WEBCAM or not PC) and not LITE),
 
   PythonProcess("sensord", "openpilot.system.sensord.sensord", only_onroad, enabled=not PC),
-  PythonProcess("ui", "openpilot.selfdrive.ui.ui", and_(always_run, builtin_display), restart_if_crash=True),
+  PythonProcess("ui", "openpilot.selfdrive.ui.ui", and_(always_run, builtin_display), restart_if_crash=True,
+                watchdog_max_dt=UI_WATCHDOG_MAX_DT),
   AudioProcess("soundd", "openpilot.selfdrive.ui.soundd", driverview, enabled=not LITE),
   PythonProcess("beepd", "openpilot.sunnypilot.selfdrive.ui.beepd", beep, enabled=LITE),
   PythonProcess("locationd", "openpilot.selfdrive.locationd.locationd", only_onroad),
