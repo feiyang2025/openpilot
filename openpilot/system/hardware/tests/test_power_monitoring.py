@@ -149,6 +149,21 @@ class TestPowerMonitoring(OpenpilotTestCase):
         assert not pm.should_shutdown(ignition, True, ssb, False)
     assert not pm.should_shutdown(ignition, True, ssb, False)
 
+  # DisablePowerDown must not weld the feature shut: should_shutdown ANDs it in
+  # before ORing ForcePowerDown, so an explicit ForcePowerDown still wins.
+  def test_force_power_down_overrides_disable(self, mocker):
+    POWER_DRAW = 0
+    pm_patch(mocker, "HARDWARE.get_current_power_draw", POWER_DRAW)
+    pm = PowerMonitoring()
+    pm.car_battery_capacity_uWh = CAR_BATTERY_CAPACITY_uWh
+    pm.car_voltage_mV = GOOD_VOLTAGE
+    self.params.put_bool("DisablePowerDown", True, block=True)
+    self.params.put_bool("ForcePowerDown", True, block=True)
+    try:
+      assert pm.should_shutdown(False, True, ssb - DELAY_SHUTDOWN_TIME_S - 1, True)
+    finally:
+      self.params.put_bool("ForcePowerDown", False, block=True)
+
   # Test to check policy of not stopping charging when ignition
   def test_ignition(self, mocker):
     POWER_DRAW = 0 # To stop shutting down for other reasons

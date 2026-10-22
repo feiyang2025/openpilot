@@ -28,5 +28,5 @@ class ModelRendererSP:
     return ui_state.status in (UIStatus.ENGAGED, UIStatus.LAT_ONLY)
 
   def _get_path_half_width(self) -> float:
-    target = 0.9 if self._lateral_active else 0.40
+    target = 0.9 if (self._lateral_active or ui_state.rainbow_path) else 0.40
     return self._width_filter.update(target)

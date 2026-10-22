@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
+from openpilot.common.swaglog import cloudlog
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.system.ui.widgets.scroller import NavRawScrollPanel, NavScroller
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigCircleButton
@@ -165,9 +166,11 @@ class DeviceLayoutMici(NavScroller):
     self._params = Params()
 
     def power_off_callback():
+      cloudlog.warning("DoShutdown requested: mici settings/device power-off")
       ui_state.params.put_bool("DoShutdown", True, block=True)
 
     def reboot_callback():
+      cloudlog.warning("DoReboot requested: mici settings/device reboot")
       ui_state.params.put_bool("DoReboot", True, block=True)
 
     def reset_calibration_callback():

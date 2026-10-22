@@ -8,6 +8,8 @@ import threading
 
 import pyray as rl
 
+from openpilot.common.swaglog import cloudlog
+
 from openpilot.selfdrive.ui.mici.layouts.settings.software import (CheckUpdateButton, InstallUpdateButton, SoftwareLayoutMici,
                                                                     TargetBranchButton, UpdaterState, _split_description)
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
@@ -48,7 +50,10 @@ class ReleaseNotesPage(NavRawScrollPanel):
     gui_app.push_widget(self)
 
   def _on_install(self):
-    threading.Thread(target=lambda: ui_state.params.put_bool("DoReboot", True, block=True), daemon=True).start()
+    def _install():
+      cloudlog.warning("DoReboot requested: sunnypilot mici software install update")
+      ui_state.params.put_bool("DoReboot", True, block=True)
+    threading.Thread(target=_install, daemon=True).start()
 
   def _render(self, rect: rl.Rectangle):
     # the renderer indents a nested list without narrowing its wrap width, so leave the room here

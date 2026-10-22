@@ -292,7 +292,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     allow_throttle = sm['longitudinalPlan'].allowThrottle or not self._longitudinal_control
     self._blend_filter.update(int(allow_throttle))
 
-    if ui_state.rainbow_path and self._lateral_active:
+    if ui_state.rainbow_path:
       self.rainbow_path.draw_rainbow_path(self._rect, self._path)
       return
 

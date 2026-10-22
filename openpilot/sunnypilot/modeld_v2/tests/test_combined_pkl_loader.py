@@ -7,6 +7,9 @@ See the LICENSE.md file in the root directory for more details.
 
 from openpilot.common.parameterized import parameterized
 
+import struct
+from unittest import mock
+
 import openpilot.sunnypilot.models.helpers as helpers
 import openpilot.sunnypilot.modeld_v2.modeld as modeld_module
 from openpilot.sunnypilot.modeld_v2.modeld import _find_driving_pkl
@@ -26,6 +29,12 @@ ModelState = modeld_module.ModelState
 # Pkl discovery
 
 class TestFindDrivingPkl(OpenpilotTestCase):
+  def setup_method(self):
+    # These cases are about bundle resolution: pin "no local model selected" so a
+    # model compiled on this bench cannot short-circuit the lookups below.
+    self._fixture("mocker").patch("openpilot.sunnypilot.modeld_v2.pkl_device.active_local_pkl",
+                                  lambda: None)
+
   def test_returns_none_when_no_bundle(self):
     assert _find_driving_pkl(None) is None
 
@@ -54,9 +63,75 @@ class TestFindDrivingPkl(OpenpilotTestCase):
     assert 'driving_fof_tinygrad.pkl' in result
 
 
+def _write_opcode_file(path, opcodes: bytes):
+  with open(path, 'wb') as f:
+    f.write(struct.pack('<q', len(opcodes)))
+    f.write(opcodes)
+  return path
+
+
+class TestPklExists(OpenpilotTestCase):
+  def test_accepts_chunk_manifest(self, tmp_path):
+    from openpilot.common.file_chunker import get_manifest_path
+    base = tmp_path / 'driving_chunked_tinygrad.pkl'
+    assert not modeld_module._pkl_exists(str(base))
+    with open(get_manifest_path(str(base)), 'w') as f:
+      f.write('2')
+    assert modeld_module._pkl_exists(str(base))
+
+
+# Device guard: a catalog pkl compiled for another backend must be refused before load
+
+class TestDeviceGuard(OpenpilotTestCase):
+  def test_hints_read_from_opcode_header(self, tmp_path):
+    path = _write_opcode_file(tmp_path / 'driving_qcom_tinygrad.pkl', b'...QCOM...CUDA...')
+    assert modeld_module._pkl_device_hints(path) == {'QCOM', 'CUDA'}
+
+  def test_missing_header_yields_no_hints(self, tmp_path):
+    path = tmp_path / 'truncated.pkl'
+    path.write_bytes(b'abc')
+    assert modeld_module._pkl_device_hints(str(path)) == set()
+
+  def test_incompatible_for_other_device(self, tmp_path):
+    path = _write_opcode_file(tmp_path / 'driving_qcom_tinygrad.pkl', b'...QCOM...')
+    reason = modeld_module._pkl_incompatible_reason(path, device='CUDA')
+    assert reason is not None and 'QCOM' in reason
+    assert modeld_module._pkl_incompatible_reason(path, device='QCOM') is None
+
+  def test_no_hints_is_assumed_compatible(self, tmp_path):
+    path = _write_opcode_file(tmp_path / 'driving_generic_tinygrad.pkl', b'no device here')
+    assert modeld_module._pkl_incompatible_reason(path, device='CUDA') is None
+
+
+class TestFallbackOnIncompatiblePkl(OpenpilotTestCase):
+  def test_falls_back_to_local_cuda_pkl(self, tmp_path, monkeypatch):
+    fallback = tests_helpers.write_pkl(tmp_path, ARCHETYPES['supercombo_non20hz'])
+    bad = _write_opcode_file(tmp_path / 'driving_qcom_tinygrad.pkl', b'...QCOM...')
+
+    monkeypatch.setattr(modeld_module, '_LOCAL_CUDA_PKL', str(fallback))
+
+    with mock.patch.dict('os.environ', {'COMBINED_MODEL_PKL': str(bad)}):
+      state = ModelState(cam_w=CAM_W, cam_h=CAM_H)
+    assert state._combined_model_type == 'supercombo'
+
+  def test_raises_when_no_fallback_available(self, tmp_path, monkeypatch):
+    bad = _write_opcode_file(tmp_path / 'driving_qcom_tinygrad.pkl', b'...QCOM...')
+    monkeypatch.setattr(modeld_module, '_LOCAL_CUDA_PKL', str(tmp_path / 'missing.pkl'))
+
+    with mock.patch.dict('os.environ', {'COMBINED_MODEL_PKL': str(bad)}), \
+         self.assertRaisesRegex(RuntimeError, "no usable driving model"):
+      ModelState(cam_w=CAM_W, cam_h=CAM_H)
+
+
 # Init — assertion guard
 
 class TestModelStateCombinedInit(OpenpilotTestCase):
+  def setup_method(self):
+    # This assertion is specifically about an empty bundle, independent of any
+    # local model compiled on the developer's device.
+    self._fixture("mocker").patch("openpilot.sunnypilot.modeld_v2.pkl_device.active_local_pkl",
+                                  lambda: None)
+
   def test_asserts_when_no_pkl(self, monkeypatch):
     bundle = DummyBundle(models=[], is_20hz=True)
     monkeypatch.setattr(helpers, 'get_active_bundle', lambda params=None, *, chestnut=None: bundle)

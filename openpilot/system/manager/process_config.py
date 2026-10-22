@@ -127,12 +127,33 @@ def use_sunnylink_uploader_shim(started, params, CP: car.CarParams) -> bool:
   return use_sunnylink_uploader(params)
 
 def is_tinygrad_model(started, params, CP: car.CarParams) -> bool:
-  """Check if the active model runner is tinygrad."""
+  """Check if the active model runner is tinygrad.
+
+  Outside comma hardware the stock (SNPE) runner cannot work at all, and a
+  locally compiled model is tinygrad's by construction. Both cases must start
+  modeld_tinygrad even when the catalog bundle in the slot is a Qualcomm build
+  (which cannot run here either).
+  """
+  if _tinygrad_only_platform() or _local_cuda_model_selected():
+    return True
   return bool(get_active_model_runner(params, not started) == custom.ModelManagerSP.Runner.tinygrad)
 
 def is_stock_model(started, params, CP: car.CarParams) -> bool:
   """Check if the active model runner is stock."""
+  if _tinygrad_only_platform() or _local_cuda_model_selected():
+    return False
   return bool(get_active_model_runner(params, not started) == custom.ModelManagerSP.Runner.stock)
+
+def _tinygrad_only_platform() -> bool:
+  """True where the SNPE runner cannot work: anything that is not comma hardware."""
+  return not COMMA_HARDWARE
+
+def _local_cuda_model_selected() -> bool:
+  try:
+    from openpilot.sunnypilot.modeld_v2 import pkl_device
+    return pkl_device.active_local_pkl() is not None
+  except Exception:
+    return False
 
 def imu_calibration_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("ImuCalibrationEnabled")

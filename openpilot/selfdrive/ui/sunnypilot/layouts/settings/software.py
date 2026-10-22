@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.layouts.settings.software import SoftwareLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
@@ -39,6 +40,7 @@ class SoftwareLayoutSP(SoftwareLayout):
   def _handle_reboot(self, result):
     if result == DialogResult.CONFIRM:
       ui_state.params.put_bool("DisableUpdates", self.disable_updates_toggle.action_item.get_state())
+      cloudlog.warning("DoReboot requested: sunnypilot software settings reboot prompt")
       ui_state.params.put_bool("DoReboot", True)
     else:
       self.disable_updates_toggle.action_item.set_state(ui_state.params.get_bool("DisableUpdates"))

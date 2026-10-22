@@ -1,6 +1,7 @@
 import subprocess
 import time
 import datetime
+from openpilot.common.swaglog import cloudlog
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
@@ -178,6 +179,7 @@ class SoftwareLayout(Widget):
   def _on_install_update(self):
     # Trigger reboot to install update
     self._install_btn.action_item.set_enabled(False)
+    cloudlog.warning("DoReboot requested: big UI software install update")
     ui_state.params.put_bool("DoReboot", True, block=True)
 
   def _on_select_branch(self):

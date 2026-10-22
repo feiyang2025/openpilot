@@ -889,6 +889,35 @@ launch() {
   # "error connecting to /tmp/tmux-1000/default" and leaves a bogus log behind.
   tmux ls >/dev/null 2>&1 && tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
+  # ---- GMSL camera daemon (bench, tw_camera_cfg) ----
+  # On this C3 bench the GMSL link is only brought up by tw_camera_cfg; without
+  # it /dev/video0..2 exist but never produce frames and camerad spins on empty
+  # buffers. Use the no-argument driver mode, never 'bring' (that is the
+  # preview mode and steals the cameras from op). Start it detached with sudo so
+  # it outlives this script; if it is already up, leave it alone.
+  if command -v tw_camera_cfg > /dev/null 2>&1; then
+    if pgrep -x tw_camera_cfg > /dev/null 2>&1; then
+      echo "[cam] tw_camera_cfg already running"
+    else
+      echo "[cam] starting tw_camera_cfg (driver mode, no 'bring')"
+      : > /tmp/tw_camera_cfg.log
+      sudo setsid nohup tw_camera_cfg > /tmp/tw_camera_cfg.log 2>&1 </dev/null &
+      # The daemon prints "Video0/1 is connected" once the GMSL link is up; give
+      # it a bounded wait, but never block startup (offroad needs no camera).
+      for _ in $(seq 1 15); do
+        grep -q "is connected" /tmp/tw_camera_cfg.log 2>/dev/null && break
+        sleep 1
+      done
+      if pgrep -x tw_camera_cfg > /dev/null 2>&1; then
+        grep -q "is connected" /tmp/tw_camera_cfg.log 2>/dev/null \
+          && echo "[cam] tw_camera_cfg running, link up" \
+          || echo "[cam] tw_camera_cfg running but no 'is connected' yet (see /tmp/tw_camera_cfg.log)"
+      else
+        echo "[cam] WARNING: tw_camera_cfg NOT running (see /tmp/tw_camera_cfg.log)"
+      fi
+    fi
+  fi
+
   # ---- Fake panda (bench only, no CAN hardware) ----
   # Road default is to never synthesize ignition or CAN; opt in explicitly with
   # ENABLE_FAKE_PANDA=1. Without it and without a real panda, ignition stays

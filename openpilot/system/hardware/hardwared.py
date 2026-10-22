@@ -244,6 +244,15 @@ def hardware_thread(end_event, hw_queue) -> None:
   offroad_cycle_count = 0
 
   params = Params()
+  # Bench guard: on a PC/Jetson bench (no comma hardware, no car power path) the
+  # panda harness status reads as "in car" and the 30-minute MaxTimeOffroad timer
+  # then requests DoShutdown on every offroad transition, killing the whole stack
+  # three seconds in. DisablePowerDown is persistent on purpose so a manual
+  # ForcePowerDown still works (should_shutdown checks DisablePowerDown before it
+  # ORs ForcePowerDown in). Real comma hardware is left alone.
+  if not COMMA_HARDWARE and not params.get_bool("DisablePowerDown"):
+    params.put_bool("DisablePowerDown", True, block=True)
+    cloudlog.warning("bench: no comma hardware, set DisablePowerDown=True to block offroad auto-shutdown")
   power_monitor = PowerMonitoring()
 
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
@@ -462,7 +471,11 @@ def hardware_thread(end_event, hw_queue) -> None:
     # Check if we need to shut down
     if accelerator_off_ts is not None or power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
       if accelerator_off_ts is None:
-        cloudlog.warning(f"shutting device down, offroad since {off_ts}")
+        cloudlog.warning(
+          f"shutting device down, offroad since {off_ts}; in_car={in_car} "
+          f"ForcePowerDown={params.get_bool('ForcePowerDown')} DisablePowerDown={params.get_bool('DisablePowerDown')} "
+          f"MaxTimeOffroad={params.get('MaxTimeOffroad')} voltage={voltage} capacity={power_monitor.get_car_battery_capacity()}"
+        )
         # an accelerator on its own supply outlives us: ask it once, and keep publishing while it powers off
         jetlink_adapter.request_shutdown(f"comma shutting down, offroad since {off_ts}")
         accelerator_off_ts = time.monotonic()

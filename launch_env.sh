@@ -33,12 +33,15 @@ if [ "$(uname -m)" = "aarch64" ] && [ ! -e /TICI ]; then
   export CAM_BRIGHTNESS="1.0"
 
   # 本机(Orin)没有高通 Adreno(/dev/kgsl-3d0), 上游模型包里的 *_tinygrad.pkl 是
-  # QCOM 编译版, modeld_tinygrad 一加载就崩 FileNotFoundError。指向本机编译的
-  # tinygrad pkl(compile_modeld.py 产物, 不入库; 缺失时跑
-  # scripts/build_runtime.sh 或参照交付记录阶段 7 生成)。
-  # 这个分支同样覆盖 PC aarch64, 但 PC 上没有该 pkl 时 modeld 会明确报错, 可接受。
-  if [ -z "${COMBINED_MODEL_PKL:-}" ] && [ -f "$DIR/openpilot/selfdrive/modeld/models/driving_tinygrad.pkl" ]; then
-    export COMBINED_MODEL_PKL="$DIR/openpilot/selfdrive/modeld/models/driving_tinygrad.pkl"
+  # QCOM 编译版, modeld_tinygrad 一加载就崩 FileNotFoundError。
+  #
+  # 不再在这里强制导出 COMBINED_MODEL_PKL(它会盖掉 modeld 里的模型选择)。modeld
+  # 现在按 project3 的同一套优先级自解析:
+  #   COMBINED_MODEL_PKL(手动/环境覆盖) > 选中的本机编译模型(模型选择器写入的
+  #   local_models.json) > 当前 bundle(不兼容时自动回退到本机 CUDA pkl)。
+  # 手动临时覆盖仍然可用: COMBINED_MODEL_PKL=/path/to.pkl ./launch_openpilot.sh
+  if [ -n "${COMBINED_MODEL_PKL:-}" ]; then
+    echo "[models] using COMBINED_MODEL_PKL=$COMBINED_MODEL_PKL (manual override)"
   fi
 fi
 

@@ -100,6 +100,8 @@ async def api_reboot(request: web.Request) -> web.Response:
   if blocked is not None:
     return blocked
   try:
+    from openpilot.common.swaglog import cloudlog
+    cloudlog.warning("DoReboot requested: carrot web /api/reboot")
     _params().put_bool("DoReboot", True)
   except Exception as exc:
     return web.json_response({"ok": False, "error": str(exc)}, status=500)
@@ -111,6 +113,8 @@ async def api_poweroff(request: web.Request) -> web.Response:
   if blocked is not None:
     return blocked
   try:
+    from openpilot.common.swaglog import cloudlog
+    cloudlog.warning("DoShutdown requested: carrot web /api/poweroff")
     _params().put_bool("DoShutdown", True)
   except Exception as exc:
     return web.json_response({"ok": False, "error": str(exc)}, status=500)
@@ -131,6 +135,8 @@ async def api_recalibrate(request: web.Request) -> web.Response:
       except Exception:
         pass
     params.put_bool("OnroadCycleRequested", True)
+    from openpilot.common.swaglog import cloudlog
+    cloudlog.warning("DoReboot requested: carrot web /api/recalibrate")
     params.put_bool("DoReboot", True)
   except Exception as exc:
     return web.json_response({"ok": False, "error": str(exc)}, status=500)

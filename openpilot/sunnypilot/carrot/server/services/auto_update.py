@@ -123,7 +123,9 @@ class AutoRebootCondition:
 
 def _request_reboot() -> None:
   from openpilot.common.params import Params
+  from openpilot.common.swaglog import cloudlog
 
+  cloudlog.warning("DoReboot requested: carrot auto-update post-update reboot")
   Params().put_bool("DoReboot", True)
 
 

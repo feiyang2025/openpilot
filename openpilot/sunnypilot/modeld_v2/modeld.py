@@ -20,6 +20,7 @@ import numpy as np
 import threading
 import time
 from setproctitle import setproctitle
+from tinygrad import Device
 from tinygrad.tensor import Tensor
 
 import openpilot.cereal.messaging as messaging
@@ -57,6 +58,7 @@ from openpilot.sunnypilot.modeld_v2.compile_modeld import (derive_frame_skip, ma
                                                            WARP_INPUTS, POLICY_INPUTS)
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
+from openpilot.sunnypilot.modeld_v2 import pkl_device
 from openpilot.sunnypilot.modeld_v2.helpers import load_oob
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
@@ -65,14 +67,30 @@ PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 BIG_MODEL_TIMEOUT = 60
 
 
-def _pkl_exists(path):
-  from openpilot.common.file_chunker import get_manifest_path
-  return os.path.exists(path) or os.path.exists(get_manifest_path(path))
+# Shared device guard (see pkl_device.py): the same hints decide whether a
+# catalog pkl may load here and whether a bundle is marked usable in the UI.
+_pkl_exists = pkl_device.pkl_exists
+_pkl_device_hints = pkl_device.pkl_device_hints
+_pkl_incompatible_reason = pkl_device.pkl_incompatible_reason
+
+# Fallback for a catalog bundle that cannot run here: the CUDA build shipped in the checkout.
+# On this bench launch_env.sh points COMBINED_MODEL_PKL at the same file, but clearing the env
+# (or selecting a QCOM bundle from the model manager) must not take modeld down with it.
+_LOCAL_CUDA_PKL = os.path.join(
+  os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+  'selfdrive', 'modeld', 'models', 'driving_tinygrad.pkl')
 
 
 def _find_driving_pkl(bundle):
+  # Deliberately returns an incompatible pkl too: ModelState needs the path to log why it was
+  # rejected and to fall back. Device validation lives in ModelState, not here.
+  #
+  # Precedence: an explicit COMBINED_MODEL_PKL wins (bench override / tests), then a model
+  # compiled locally on this device from ONNX (P2-1), then the selected catalog bundle.
   if (override := os.environ.get('COMBINED_MODEL_PKL')) and _pkl_exists(override):
     return override
+  if (local := pkl_device.active_local_pkl()) is not None:
+    return local
   if bundle is None or not bundle.models:
     return None
   from openpilot.common.hardware.hw import Paths
@@ -103,7 +121,7 @@ class ModelState(ModelStateBase):
     ModelStateBase.__init__(self)
 
     env_pkl = os.environ.get('COMBINED_MODEL_PKL')
-    if env_pkl and os.path.exists(env_pkl):
+    if env_pkl and _pkl_exists(env_pkl):
       model_bundle = None
     else:
       model_bundle = get_active_bundle(chestnut=chestnut)
@@ -118,15 +136,32 @@ class ModelState(ModelStateBase):
 
     pkl_path = _find_driving_pkl(model_bundle)
     assert pkl_path is not None, f"No driving pkl found for {'chestnut' if chestnut else 'small model'} — all models must be compiled with compile_modeld.py"
-    self._init_combined(pkl_path, cam_w, cam_h, model_bundle)
+    self._load_with_device_fallback(pkl_path, cam_w, cam_h, model_bundle)
+
+  def _load_with_device_fallback(self, pkl_path, cam_w, cam_h, bundle):
+    # A picked bundle that cannot run on this device must degrade to the local CUDA build, not
+    # kill modeld: manager would otherwise restart it into the same crash on every onroad cycle.
+    reason = _pkl_incompatible_reason(pkl_path)
+    if reason is None:
+      try:
+        self._init_combined(pkl_path, cam_w, cam_h, bundle)
+        return
+      except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+    cloudlog.error(f"model pkl unusable: {pkl_path} (device={Device.DEFAULT}): {reason}")
+    fallback = _LOCAL_CUDA_PKL
+    if not _pkl_exists(fallback) or os.path.abspath(fallback) == os.path.abspath(pkl_path):
+      raise RuntimeError(f"no usable driving model: {pkl_path} ({reason})")
+    cloudlog.warning(f"falling back to {fallback} (reason: {reason})")
+    self._init_combined(fallback, cam_w, cam_h, None)
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
     jits = load_oob(open_file_chunked(pkl_path))
 
     metadata = jits['metadata']
-    self.WARP_DEV = metadata.get('warp_dev', 'QCOM') if COMMA_HARDWARE else 'CPU'
-    self.DEV = ('AMD' if self.chestnut else 'QCOM') if COMMA_HARDWARE else 'CPU'
+    self.WARP_DEV = metadata.get('warp_dev', 'QCOM') if COMMA_HARDWARE else Device.DEFAULT
+    self.DEV = ('AMD' if self.chestnut else 'QCOM') if COMMA_HARDWARE else Device.DEFAULT
     self.QUEUE_DEV = self.DEV
     self.is_run_model = 'run_model' in jits
 
@@ -324,6 +359,51 @@ class ModelState(ModelStateBase):
     return log.ModelDataV2.Action(desiredCurvature=float(desired_curvature), desiredAcceleration=float(desired_accel), shouldStop=bool(stop))
 
 
+def _pick_trt_profile(chestnut: bool):
+  """Choose a TensorRT profile without touching MODEL_NAME.
+
+  MODEL_NAME also drives the model manager (it selects which catalog bundle to
+  run), so reusing it to pick an engine couples two unrelated decisions. TRT_PROFILE
+  is the dedicated override; use it to force FiletOFish/TGC/supercombo by name.
+  """
+  from openpilot.sunnypilot.modeld_v2.gpu_backend.models.registry import REGISTRY, resolve_profile
+  if (requested := os.getenv("TRT_PROFILE")):
+    return resolve_profile(requested)
+  # supercombo is the merged profile that matches the bundled small model
+  # (driving_supercombo.onnx; the local CUDA pkl has the same 2574-wide output), so
+  # it is the right stand-in when replacing the tinygrad small runner. FiletOFish
+  # is a different split model and must be asked for explicitly.
+  names = ("TGC", "BigCombo") if chestnut else ("supercombo",)
+  for name in names:
+    profile = REGISTRY.get(name)
+    if profile is not None and profile.is_ready():
+      return profile
+  return None
+
+
+def make_model_state(cam_w: int, cam_h: int, chestnut: bool = False):
+  """Build the small/big model state, TRT when asked for and available.
+
+  USE_TRT=1 switches the runner to GpuModelState; any failure (missing profile,
+  missing engine, backend init) logs and falls back to the tinygrad ModelState so
+  one env var can never take modeld down. `USE_TRT=0` (or unset) keeps the exact
+  tinygrad path that runs at 20 Hz today.
+  """
+  if os.getenv("USE_TRT") == "1":
+    try:
+      from openpilot.sunnypilot.modeld_v2.gpu_model_state import GpuModelState
+      profile = _pick_trt_profile(chestnut)
+      if profile is None:
+        raise RuntimeError(f"no usable TRT profile for chestnut={chestnut}")
+      state = GpuModelState(cam_w, cam_h, chestnut, profile=profile)
+      state.warmup()
+      cloudlog.warning(f"using TRT model state: profile={profile.name} mode={profile.mode} chestnut={chestnut}")
+      return state
+    except Exception as e:
+      cloudlog.error(f"USE_TRT=1 but TRT init failed ({type(e).__name__}: {e}); using tinygrad")
+  return ModelState(cam_w=cam_w, cam_h=cam_h, chestnut=chestnut)
+
+
 def main(demo=False):
   cloudlog.warning("modeld init")
 
@@ -376,7 +456,7 @@ def main(demo=False):
     def load_big():
       nonlocal big_model
       try:
-        m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
+        m = make_model_state(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
         m.warmup()
         big_model = m
       except Exception:
@@ -391,7 +471,7 @@ def main(demo=False):
     if model is not None:
       params.remove("ChestnutModelError")
 
-  small_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=False) if model is None or CHESTNUT else None
+  small_model = make_model_state(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=False) if model is None or CHESTNUT else None
   if model is None:
     model = small_model
   if (joined := jetlink_adapter.attach(small_model, vipc_client_main.width, vipc_client_main.height)) is not None:
@@ -445,30 +525,29 @@ def main(demo=False):
   RELC = RoadEdgeLaneChangeController()
 
   while True:
-    # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
-    while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
-      buf_main = vipc_client_main.recv()
-      meta_main = FrameMeta(vipc_client_main)
-      if buf_main is None:
-        break
-
+    buf_main = vipc_client_main.recv()
+    meta_main = FrameMeta(vipc_client_main)
     if buf_main is None:
       cloudlog.debug("vipc_client_main no frame")
       continue
 
     if use_extra_client:
-      # Keep receiving extra frames until frame id matches main camera
-      while True:
+      # Pair by frame id instead of pre-advancing main by 25ms of SOF. The two
+      # cameras on this bench run ~25ms out of phase (half a 20Hz frame), so the
+      # old timestamp handshake read two main frames per iteration and the model
+      # was capped at 10Hz. Waiting for the matching extra frame keeps the loop
+      # at MODEL_FREQ; the SOF skew is reported below instead of dropping frames.
+      while buf_extra is None or meta_extra.frame_id < meta_main.frame_id:
         buf_extra = vipc_client_extra.recv()
-        meta_extra = FrameMeta(vipc_client_extra)
-        if buf_extra is None or meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
+        if buf_extra is None:
           break
+        meta_extra = FrameMeta(vipc_client_extra)
 
       if buf_extra is None:
         cloudlog.debug("vipc_client_extra no frame")
         continue
 
-      if abs(meta_main.timestamp_sof - meta_extra.timestamp_sof) > 10000000:
+      if meta_main.frame_id != meta_extra.frame_id:
         cloudlog.error(f"frames out of sync! main: {meta_main.frame_id} ({meta_main.timestamp_sof / 1e9:.5f}),\
                        extra: {meta_extra.frame_id} ({meta_extra.timestamp_sof / 1e9:.5f})")
 

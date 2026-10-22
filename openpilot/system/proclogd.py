@@ -13,7 +13,7 @@ PAGE_SIZE = os.sysconf(os.sysconf_names['SC_PAGE_SIZE'])
 def _cpu_times() -> list[dict[str, float]]:
   cpu_times: list[dict[str, float]] = []
   try:
-    with open('/proc/stat') as f:
+    with open('/proc/stat', encoding='utf-8', errors='replace') as f:
       lines = f.readlines()[1:]
     for line in lines:
       if not line.startswith('cpu') or len(line) < 4 or not line[3].isdigit():
@@ -38,7 +38,7 @@ def _mem_info() -> dict[str, int]:
   keys = ["MemTotal:", "MemFree:", "MemAvailable:", "Buffers:", "Cached:", "Active:", "Inactive:", "Shmem:"]
   info: dict[str, int] = dict.fromkeys(keys, 0)
   try:
-    with open('/proc/meminfo') as f:
+    with open('/proc/meminfo', encoding='utf-8', errors='replace') as f:
       for line in f:
         parts = line.split()
         if parts and parts[0] in info:
@@ -199,7 +199,7 @@ def _procs() -> list[ProcStat]:
     if not pid_str.isdigit():
       continue
     try:
-      with open(f'/proc/{pid_str}/stat') as f:
+      with open(f'/proc/{pid_str}/stat', encoding='utf-8', errors='replace') as f:
         stat = f.read()
       parsed = _parse_proc_stat(stat)
       if parsed is not None:

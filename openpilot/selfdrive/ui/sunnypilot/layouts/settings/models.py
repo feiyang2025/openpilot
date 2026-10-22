@@ -33,6 +33,9 @@ from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeOptionDialog,
 
 from openpilot.selfdrive.ui.sunnypilot.accelerator_link import LINK_MODES, LINK_MODE_TITLES, LINK_PARAM, link_mode, \
   link_status, link_toggle_meaningful
+from openpilot.selfdrive.ui.sunnypilot.local_model_ui import (bundle_device_note, local_cuda_supported,
+                                                              local_model_compile_job, local_model_status_text)
+from openpilot.sunnypilot.modeld_v2 import local_models, pkl_device
 
 if gui_app.sunnypilot_ui():
   from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp as button_item
@@ -43,6 +46,7 @@ class ModelsLayout(Widget):
     super().__init__()
     self.model_manager = None
     self.model_dialog = None
+    self.local_model_dialog = None
     self._selection_source = None
     self._downloading = False
     self._verifying = False
@@ -52,6 +56,7 @@ class ModelsLayout(Widget):
     self._last_note = None
     self._last_mirror_desc = None
     self._last_catalog_desc = None
+    self._last_local_model_text = None
     self.last_cache_calc_time = 0
     self._link_status: str | None = None
 
@@ -75,6 +80,13 @@ class ModelsLayout(Widget):
       title=tr("Big Model"),
       action_item=ScrollingButtonAction(tr("SELECT")),
       callback=lambda: self._open_source_dialog("chestnut")
+    )
+
+    self.local_model_item = ListItemSP(
+      title=tr("Local CUDA Model"),
+      description=local_model_status_text,
+      action_item=ScrollingButtonAction(tr("BUILD / SELECT")),
+      callback=self._open_local_model_dialog,
     )
 
     self.download_item = download_status_item(lambda: tr("Download") if self._downloading else tr("Model Status"))
@@ -135,7 +147,7 @@ class ModelsLayout(Widget):
       [LINK_MODE_TITLES[m] for m in LINK_MODES],
       param=LINK_PARAM, button_width=300, inline=False)
 
-    self.items = [self.small_model_item, self.big_model_item, self.accelerator_link_item, self.cancel_download_item, self.download_item, self.refresh_item,
+    self.items = [self.small_model_item, self.big_model_item, self.local_model_item, self.accelerator_link_item, self.cancel_download_item, self.download_item, self.refresh_item,
                   self.hf_mirror_item, self.catalog_source_item, self.clear_cache_item,
                   self.lane_turn_desire_toggle, self.lane_turn_value_control, self.lagd_toggle, self.delay_control, self.camera_offset]
 
@@ -414,12 +426,66 @@ class ModelsLayout(Widget):
       return
     selected_ref = self.model_dialog.selection_ref
     self.model_dialog = None
+    # A catalog pick is the user choosing a bundle again: drop the local-model
+    # override, otherwise modeld would keep preferring the local pkl.
+    pkl_device.set_active_local(None)
     if selected_ref == "Default":
       if self._selection_source in ACTIVE_BUNDLE_KEYS:
         ui_state.params.remove(ACTIVE_BUNDLE_KEYS[self._selection_source])
       return
     if selected_bundle := self._resolve_selected_bundle(selected_ref):
       ui_state.params.put("ModelManager_DownloadRef", selected_bundle.ref)
+
+  def _open_local_model_dialog(self):
+    statuses = local_models.status()
+    nodes = []
+    for status in statuses:
+      if status['active']:
+        suffix = tr("selected")
+      elif status['compiled']:
+        suffix = tr("ready")
+      elif status['sources_present']:
+        suffix = tr("ONNX ready · build")
+      else:
+        suffix = tr("ONNX missing")
+      nodes.append(TreeNode(status['key'], {'display_name': f"{status['name']} · {suffix}",
+                                            'short_name': status['description']}))
+    self.local_model_dialog = TreeOptionDialog(
+      tr("Local CUDA Models"), [TreeFolder("", nodes)],
+      pkl_device.active_local_key() or "",
+      on_exit=self._on_local_model_selected,
+    )
+    gui_app.push_widget(self.local_model_dialog)
+
+  def _on_local_model_selected(self, result):
+    if result != DialogResult.CONFIRM:
+      self.local_model_dialog = None
+      return
+    key = self.local_model_dialog.selection_ref
+    self.local_model_dialog = None
+    if not key:
+      return
+    if pkl_device.local_pkl_for(key):
+      if not pkl_device.set_active_local(key):
+        gui_app.push_widget(alert_dialog(tr("The local model is not available.")))
+      return
+    spec = local_models.get_spec(key)
+    status = next((item for item in local_models.status() if item['key'] == key), None)
+    if spec is None or status is None or not status['sources_present']:
+      gui_app.push_widget(alert_dialog(tr("The ONNX source is missing. Pull the model from git-lfs first.")))
+      return
+    if not local_cuda_supported():
+      gui_app.push_widget(alert_dialog(tr("Local compilation requires a CUDA device.")))
+      return
+
+    def confirm_compile(confirm_result):
+      if confirm_result == DialogResult.CONFIRM and not local_model_compile_job.start(key):
+        gui_app.push_widget(alert_dialog(tr("A local model build is already running, or the device is not offroad.")))
+
+    gui_app.push_widget(ConfirmDialog(
+      tr("Build {} locally for this CUDA device? This may take several minutes.").format(spec.name),
+      tr("Build"), callback=confirm_compile,
+    ))
 
   def _resolve_selected_bundle(self, ref):
     source_bundles = {source: bundles_for_source(source) for source in ("qcom", "chestnut")}
@@ -429,8 +495,8 @@ class ModelsLayout(Widget):
   @staticmethod
   def _bundle_to_node(bundle, noted: bool = False):
     # a big model's line says whether the Jetson has built it or the comma has it
-    note = big_model_note(bundle.ref) if noted else None
-    name = f"{bundle.displayName} · {note}" if note else bundle.displayName
+    notes = [note for note in (big_model_note(bundle.ref) if noted else None, bundle_device_note(bundle)) if note]
+    name = f"{bundle.displayName} · {' · '.join(notes)}" if notes else bundle.displayName
     return TreeNode(bundle.ref, {'display_name': name, 'short_name': bundle.internalName})
 
   def _get_folders(self, favorites, bundles, noted: bool = False):
@@ -506,6 +572,8 @@ class ModelsLayout(Widget):
       self._last_note = note
       self._set_item_note(self.download_item, note)
 
+    self._refresh_local_model_item()
+
     offroad = ui_state.is_offroad()
     self.small_model_item.action_item.set_enabled(offroad)
     self.big_model_item.action_item.set_enabled(offroad)
@@ -519,6 +587,20 @@ class ModelsLayout(Widget):
     self.refresh_item.action_item.set_enabled(offroad and not self._downloading and not self._refreshing)
 
     self._refresh_accelerator_items()
+
+  def _refresh_local_model_item(self):
+    # visible wherever a local CUDA build can actually run; the row also carries
+    # the compile/selection state so the picker does not need its own page
+    self.local_model_item.set_visible(local_cuda_supported())
+    if not local_cuda_supported():
+      return
+    text = local_model_status_text()
+    if text != self._last_local_model_text:
+      self._last_local_model_text = text
+      self.local_model_item.set_description(text)
+      self.local_model_item.show_description(True)
+    offroad = ui_state.is_offroad()
+    self.local_model_item.action_item.set_enabled(offroad and not local_model_compile_job.snapshot()['running'])
 
   def _render(self, rect):
     self._scroller.render(rect)

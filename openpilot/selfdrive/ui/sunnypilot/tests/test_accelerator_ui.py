@@ -9,6 +9,7 @@ models panel's link toggle and status line. jetlink is one mock: the adapter's
 status(), which the params pass reads.
 """
 import os
+import tempfile
 import unittest
 from contextlib import contextmanager
 from unittest import mock
@@ -360,6 +361,39 @@ class TestTiciModelsPanel(UITest):
       layout = self._layout()
       assert layout._bundle_to_node(bundle, noted=True).data['display_name'] == "Cinque Terre V3 · " + tr("ready on Jetson")
       assert layout._bundle_to_node(bundle).data['display_name'] == "Cinque Terre V3"
+
+  def test_the_local_row_is_shown_where_a_cuda_build_can_run(self):
+    layout = self._layout()
+    with mock.patch("openpilot.selfdrive.ui.sunnypilot.layouts.settings.models.local_cuda_supported", return_value=True), \
+         mock.patch("openpilot.selfdrive.ui.sunnypilot.layouts.settings.models.local_model_status_text", return_value="state"):
+      layout._refresh_local_model_item()
+      assert layout.local_model_item.is_visible
+      assert layout.local_model_item.description == "state"
+    with mock.patch("openpilot.selfdrive.ui.sunnypilot.layouts.settings.models.local_cuda_supported", return_value=False):
+      layout._refresh_local_model_item()
+      assert not layout.local_model_item.is_visible
+    assert layout.local_model_item in layout.items
+
+  def test_a_bundle_built_for_another_device_is_marked_in_the_picker(self):
+    import struct
+    from openpilot.common.hardware import hw
+    with tempfile.TemporaryDirectory() as d:
+      path = os.path.join(d, 'driving_qcom_tinygrad.pkl')
+      with open(path, 'wb') as f:
+        f.write(struct.pack('<q', 8))
+        f.write(b'..QCOM..')
+      bundle = mock.Mock(ref='r2', displayName='QCOM only', internalName='QCOM', models=[
+        mock.Mock(artifact=mock.Mock(fileName='driving_qcom_tinygrad.pkl')),
+      ])
+      with mock.patch.object(hw.Paths, 'model_root', staticmethod(lambda: d)):
+        layout = self._layout()
+        name = layout._bundle_to_node(bundle).data['display_name']
+        assert name.startswith("QCOM only · ")
+        assert "QCOM" in name
+
+  def test_a_mocked_bundle_without_models_is_not_marked(self):
+    bundle = mock.Mock(ref='r3', displayName='Plain', internalName='Plain')
+    assert self._layout()._bundle_to_node(bundle).data['display_name'] == "Plain"
 
   def test_the_note_says_what_the_switch_is_waiting_for(self):
     ui_state = ui_state_module().ui_state

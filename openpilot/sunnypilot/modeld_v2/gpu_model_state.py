@@ -86,11 +86,16 @@ class GpuModelState(ModelStateBase):
     # float32 made every real inference fail the runner's size/dtype check
     # ("expects (1, 24, 512) float16, got float32") - the engine, not this class,
     # decides the width.
-    engine_dtypes = dict(getattr(self.backend.vision_runner, "input_dtypes", {}) or {})
+    # Split profiles bind the scalars on the policy engine, not the vision one:
+    # looking them up on vision_runner alone left every scalar at float32 and the
+    # engine rejected shape (1, 25, 8) float32 against (1, 25, 8) float16.
+    scalar_runner = self.backend.policy_runner if self.profile.mode == "split" else self.backend.vision_runner
+    engine_dtypes = dict(getattr(scalar_runner, "input_dtypes", {}) or {})
     self.npy: dict[str, np.ndarray] = {
       k: np.zeros(shape, dtype=engine_dtypes.get(k, np.float32))
       for k, shape in self.input_shapes.items()
     }
+    self.numpy_inputs = self.npy
 
     # The stock big model takes a desire pulse and a previous-feature buffer.
     # Naming them from metadata keeps this aligned with whatever the engine wants

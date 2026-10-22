@@ -134,20 +134,41 @@ class NavigationLayout(Widget):
     if not debug:
       message = tr("No navigation event received yet.")
     else:
-      lines = [
-        f"Type: {debug.get('type', '')}",
-        f"Event Time: {debug.get('eventTimeMs', 0)} ms",
-        f"Received At: {debug.get('receivedAt', '')}",
-        "",
-      ]
-      summary = debug.get('summary')
-      if isinstance(summary, dict) and summary:
-        lines.append(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True, default=str))
-      # The 10 Hz snapshot writer fills these keys instead of `summary`; show them
-      # rather than render an empty body for a snapshot-only payload.
-      snapshot = {k: v for k, v in debug.items() if k not in ('summary', 'title', 'lines')}
-      if snapshot:
-        lines.append(json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True, default=str))
+      active = str(debug.get('activeSource') or 'none')
+      gps = str(debug.get('gpsSource') or 'none')
+      connected = active != 'none' or gps != 'none'
+      event_type = debug.get('type')
+      event_time_ms = debug.get('eventTimeMs') or 0
+
+      if not connected and not event_type:
+        # With no phone/nav link carrot_man still publishes its 10 Hz snapshot, so
+        # the dialog used to show "Type: <empty>" and "Event Time: 0 ms", which
+        # reads like an error. Say plainly that nothing is connected instead.
+        lines = [
+          tr("Navigation not connected."),
+          "",
+          tr("Start the navigation app on your phone and keep it on the same network as this device."),
+          "",
+          f"{tr('Received At')}: {debug.get('receivedAt', '')}",
+        ]
+      else:
+        lines = []
+        if event_type:
+          lines.append(f"Type: {event_type}")
+        if event_time_ms:
+          lines.append(f"Event Time: {event_time_ms} ms")
+        lines.append(f"Received At: {debug.get('receivedAt', '')}")
+        lines.append("")
+
+        summary = debug.get('summary')
+        if isinstance(summary, dict) and summary:
+          lines.append(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True, default=str))
+        # The 10 Hz snapshot writer fills these keys instead of `summary`; show them
+        # rather than render an empty body for a snapshot-only payload.
+        snapshot = {k: v for k, v in debug.items() if k not in ('summary', 'title', 'lines')}
+        if snapshot:
+          lines.append(json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True, default=str))
+
       message = "\n".join(lines)
 
     self._push_navi_debug(message)

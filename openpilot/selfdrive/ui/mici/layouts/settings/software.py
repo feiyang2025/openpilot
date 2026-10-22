@@ -4,6 +4,7 @@ import pyray as rl
 from enum import IntEnum
 from collections.abc import Callable
 
+from openpilot.common.swaglog import cloudlog
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.ui.mici.layouts.settings.device import EngagedConfirmationButton
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
@@ -219,6 +220,7 @@ class InstallUpdateButton(BigButton):
     self.set_enabled(False)
 
     def run():
+      cloudlog.warning("DoReboot requested: mici software install update")
       ui_state.params.put_bool("DoReboot", True, block=True)
 
     threading.Thread(target=run, daemon=True).start()

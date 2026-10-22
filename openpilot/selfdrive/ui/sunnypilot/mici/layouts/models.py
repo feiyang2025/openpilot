@@ -14,6 +14,8 @@ from openpilot.sunnypilot.models.helpers import ACTIVE_BUNDLE_KEYS, get_selected
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle
 from openpilot.selfdrive.ui.ui_state import ui_state, device
 from openpilot.selfdrive.ui.sunnypilot.accelerator_link import LINK_MODES, LINK_PARAM, link_mode, link_toggle_meaningful
+from openpilot.selfdrive.ui.sunnypilot.local_model_ui import (local_cuda_supported, local_model_compile_job,
+                                                              local_model_status_text)
 from openpilot.selfdrive.ui.sunnypilot.model_info import (active_source, big_model_progress, big_model_state, bundles_for_source,
                                                            carrying_model, default_model_name, model_cache_size_mb, model_info,
                                                            queued_name, refresh_in_progress, refresh_model_list, standin_model)
@@ -138,6 +140,10 @@ class ModelsLayoutMici(NavScroller):
     self.select_model_btn = BigButton(tr("select model"))
     self.select_model_btn.set_click_callback(self._show_folders)
 
+    self.local_model_btn = BigButton(tr("local cuda model"))
+    self.local_model_btn.set_click_callback(self._show_local_models)
+    self._last_local_model_text: str | None = None
+
     self.refresh_btn = BigButton(tr("refresh models"))
     self.refresh_btn.set_click_callback(self._refresh_models)
     self._refresh_start: float | None = None
@@ -149,7 +155,8 @@ class ModelsLayoutMici(NavScroller):
     self.clear_cache_btn.set_click_callback(self._confirm_clear_cache)
     self._cache_size_time = 0.0
 
-    self.main_items = [self.current_model_info, self.link_toggle, self.select_model_btn, self.cancel_download_btn, self.refresh_btn, self.clear_cache_btn]
+    self.main_items = [self.current_model_info, self.link_toggle, self.select_model_btn, self.local_model_btn,
+                       self.cancel_download_btn, self.refresh_btn, self.clear_cache_btn]
     self._scroller.add_widgets(self.main_items)
 
   @property
@@ -220,10 +227,61 @@ class ModelsLayoutMici(NavScroller):
     self._scroller.scroll_panel.set_offset(0.0)
 
   def _select_model(self, bundle):
+    from openpilot.sunnypilot.modeld_v2 import pkl_device
+
+    pkl_device.set_active_local(None)
     ui_state.params.put("ModelManager_DownloadRef", bundle.ref)
     self._pop_to_main()
 
+  def _show_local_models(self):
+    from openpilot.sunnypilot.modeld_v2 import local_models
+
+    btns = []
+    for status in local_models.status():
+      if status['active']:
+        value = tr("selected")
+      elif status['compiled']:
+        value = tr("ready")
+      elif status['sources_present']:
+        value = tr("build")
+      else:
+        value = tr("onnx missing")
+      btn = BigButton(status['name'].lower(), value=value)
+      btn.set_click_callback(lambda k=status['key']: self._choose_local_model(k))
+      btns.append(btn)
+    self._push_selection_view(btns)
+
+  def _choose_local_model(self, key):
+    from openpilot.sunnypilot.modeld_v2 import local_models, pkl_device
+
+    if pkl_device.local_pkl_for(key):
+      if not pkl_device.set_active_local(key):
+        gui_app.push_widget(BigDialog(title=tr("model unavailable"),
+                                      description=tr("The local model is not available.")))
+        return
+      self._pop_to_main()
+      return
+
+    status = next((item for item in local_models.status() if item['key'] == key), None)
+    spec = local_models.get_spec(key)
+    if status is None or spec is None or not status['sources_present']:
+      gui_app.push_widget(BigDialog(title=tr("ONNX missing"),
+                                    description=tr("Pull the model source from git-lfs, then try again.")))
+      return
+    if not local_cuda_supported():
+      gui_app.push_widget(BigDialog(title=tr("CUDA required"),
+                                    description=tr("Local compilation is only available on a CUDA device.")))
+      return
+    icon = gui_app.texture("icons_mici/settings/network/new/trash.png", 54, 64)
+    gui_app.push_widget(BigConfirmationDialog(
+      f"{tr('slide to')}\n{tr('build')} {spec.name.lower()}", icon,
+      lambda: local_model_compile_job.start(key) and self._pop_to_main(),
+    ))
+
   def _select_default(self, source):
+    from openpilot.sunnypilot.modeld_v2 import pkl_device
+
+    pkl_device.set_active_local(None)
     ui_state.params.remove(ACTIVE_BUNDLE_KEYS[source])
     self._pop_to_main()
 
@@ -263,6 +321,13 @@ class ModelsLayoutMici(NavScroller):
     super()._update_state()
 
     self.select_model_btn.set_enabled(ui_state.is_offroad())
+    self.local_model_btn.set_visible(local_cuda_supported())
+    if local_cuda_supported():
+      text = local_model_status_text()
+      if text != self._last_local_model_text:
+        self._last_local_model_text = text
+        self.local_model_btn.set_value(text)
+      self.local_model_btn.set_enabled(ui_state.is_offroad() and not local_model_compile_job.snapshot()['running'])
     self.cancel_download_btn.set_visible(False)
     self.current_model_info.current_model_header._shimmer = False
     self.current_model_info.info_header._shimmer = False

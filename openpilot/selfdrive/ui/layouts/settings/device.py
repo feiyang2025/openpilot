@@ -197,6 +197,7 @@ class DeviceLayout(Widget):
 
     def perform_reboot(result: DialogResult):
       if not ui_state.engaged and result == DialogResult.CONFIRM:
+        cloudlog.warning("DoReboot requested: big UI settings/device reboot")
         self._params.put_bool("DoReboot", True)
 
     dialog = ConfirmDialog(tr("Are you sure you want to reboot?"), tr("Reboot"), callback=perform_reboot)
@@ -209,6 +210,7 @@ class DeviceLayout(Widget):
 
     def perform_power_off(result: DialogResult):
       if not ui_state.engaged and result == DialogResult.CONFIRM:
+        cloudlog.warning("DoShutdown requested: big UI settings/device power-off")
         self._params.put_bool("DoShutdown", True)
 
     dialog = ConfirmDialog(tr("Are you sure you want to power off?"), tr("Power Off"), callback=perform_power_off)
