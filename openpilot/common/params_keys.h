@@ -8,6 +8,7 @@
 inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AccessToken", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
     {"AdbEnabled", {PERSISTENT | BACKUP, BOOL}},
+    {"AdvancedLateralTune", {PERSISTENT | BACKUP, BOOL, "0"}},  // FLM advanced lateral master switch
     {"AlwaysOnDM", {PERSISTENT | BACKUP, BOOL}},
     {"ApiCache_Device", {PERSISTENT, STRING}},
     {"ApiCache_FirehoseStats", {PERSISTENT, JSON}},
@@ -28,6 +29,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ControlsReady", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"CurrentBootlog", {PERSISTENT, STRING}},
     {"CurrentRoute", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"DisableDriverCameraIR", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"DisableLogging", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"DisablePowerDown", {PERSISTENT | BACKUP, BOOL}},
     {"DisableUpdates", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -43,6 +45,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ExperimentalModeConfirmed", {PERSISTENT | BACKUP, BOOL}},
     {"FirmwareQueryDone", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"ForcePowerDown", {PERSISTENT, BOOL}},
+    {"FLMActiveOverrides", {PERSISTENT | BACKUP, JSON}},  // FLM active override blob (friction curves + vehicle knobs)
+    {"FLMActiveProfileId", {PERSISTENT | BACKUP, STRING}},  // FLM active trial/saved-tune profile id
+    {"FLMSubmittedTune", {PERSISTENT, JSON}},  // Galaxy tune submission handoff payload
+    {"FLMTrialApplied", {PERSISTENT | BACKUP, BOOL, "0"}},  // FLM trial profile currently applied
+    {"FLMTrialBaseline", {PERSISTENT | BACKUP, JSON}},  // FLM rollback baseline snapshot
+    {"ForceAutoTune", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"ForceAutoTuneOff", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"GitBranch", {PERSISTENT, STRING}},
     {"GitCommit", {PERSISTENT, STRING}},
     {"GitCommitDate", {PERSISTENT, STRING}},
@@ -61,6 +70,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"GsmRoaming", {PERSISTENT | BACKUP, BOOL}},
     {"HardwareSerial", {PERSISTENT, STRING}},
     {"HasAcceptedTerms", {PERSISTENT, STRING, "0"}},
+    {"IcbmDemandMigrated", {PERSISTENT | BACKUP, BOOL}},  // ICBM toggle to ICBM on demand (intelligent_cruise_button_management/migration.py)
     {"InstallDate", {PERSISTENT, TIME}},
     {"IsDriverViewEnabled", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsEngaged", {PERSISTENT, BOOL}},
@@ -69,11 +79,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"IsMetric", {PERSISTENT | BACKUP, BOOL}},
     {"IsOffroad", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsTakingSnapshot", {CLEAR_ON_MANAGER_START, BOOL}},  // offroad camera check (carrot vision runner)
+    {"ModelManager_CarryOver", {PERSISTENT, JSON}},  // model picks waiting to be re-queued after a selector bump (models/default_bootstrap.py)
+    {"OffroadModeRequested", {CLEAR_ON_MANAGER_START, BOOL}},
     {"Offroad_IsTakingSnapshot", {CLEAR_ON_MANAGER_START, JSON}},
     // Jetlink (accelerator link): what runs the large model off the device.
     // JetlinkSpec carries whether the engine is built, which must survive a reboot
     // or every ignition cycle would rebuild a multi-minute engine.
     {"AcceleratorProgress", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_AcceleratorUnavailable", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_CarrotAutoUpdateFailed", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_JetlinkUnavailable", {CLEAR_ON_MANAGER_START, JSON}},
     {"JetlinkLink", {PERSISTENT | BACKUP, INT, "0"}},
     {"JetlinkSpec", {PERSISTENT, JSON}},
@@ -121,6 +135,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Offroad_ConnectivityNeeded", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_ConnectivityNeededPrompt", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_ExcessiveActuation", {PERSISTENT, JSON}},
+    {"Offroad_NeosUpdate", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_NoFirmware", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_Recalibration", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_TemperatureTooHigh", {CLEAR_ON_MANAGER_START, JSON}},
@@ -139,6 +154,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RouteCount", {PERSISTENT, INT, "0"}},
     {"SnoozeUpdate", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"SshEnabled", {PERSISTENT | BACKUP, BOOL}},
+    {"StockEcuHandBackRequest", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
+    {"StockEcuHandBackResult", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     {"TermsVersion", {PERSISTENT, STRING}},
     {"TorqueBar", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrainingVersion", {PERSISTENT, STRING}},
@@ -158,7 +175,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"UptimeOnroad", {PERSISTENT, FLOAT, "0.0"}},
     {"ChestnutActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"ChestnutLoading", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
-    {"ChestnutModelError", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"Version", {PERSISTENT, STRING}},
 
     // --- sunnypilot params --- //
@@ -256,6 +272,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SunnylinkCache_Users", {PERSISTENT, STRING}},
     {"SunnylinkDongleId", {PERSISTENT, STRING}},
     {"SunnylinkdPid", {PERSISTENT, INT}},
+    {"StarPilotTogglesUpdated", {PERSISTENT, BOOL, "0"}},  // toggle-refresh signal (Galaxy)
     {"SunnylinkEnabled", {PERSISTENT, BOOL, "1"}},
     {"SunnylinkTempFault", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0"}},
 
@@ -285,6 +302,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LeadForecast", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"ExperimentalModeSetSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ExperimentalModeLeadGap", {PERSISTENT | BACKUP, BOOL, "0"}},
+
+    // Accel Controller profiles (Eco / Normal / Sport)
+    {"AccelPersonalityEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"AccelPersonality", {PERSISTENT | BACKUP, INT, "1"}},
 
     // Accel Controller profiles (Eco / Normal / Sport)
     {"AccelPersonalityEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -330,6 +351,25 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SpeedLimitPolicy", {PERSISTENT | BACKUP, INT, "4"}},  // 0=car only, 1=map only, 2=car first, 3=map first, 4=combined (min)
     {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "0"}},
 
+    // Vision speed limit daemon (speed_limit_vision)
+    {"SpeedLimitVisionEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // manager gate: run the vision speed-limit daemon onroad
+    {"VisionSpeedLimitEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // feed the detected vision limit into the speed-limit resolver (folded into the map source)
+    {"VisionSpeedLimitLowLimitFilter", {PERSISTENT | BACKUP, BOOL, "0"}},  // drop vision limits at or below the threshold (usually a misread sign)
+    {"VisionSpeedLimitLowLimitThreshold", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // m/s
+    {"VASMEnabled", {PERSISTENT, BOOL, "0"}},  // coexistence mode with the VASM detection stack
+    {"VisionSpeedLimit", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, FLOAT, "0.0"}},  // latest published vision limit in m/s
+    {"VisionSpeedLimitAutoBookmark", {PERSISTENT, BOOL, "0"}},  // capture debug bookmarks on confirmed detections
+    {"VisionSpeedLimitAutoPreserveSegment", {PERSISTENT, BOOL, "0"}},
+    {"VisionSpeedLimitBookmarkCount", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, INT, "0"}},
+    {"VisionSpeedLimitConfidence", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, FLOAT, "0.0"}},
+    {"VisionSpeedLimitDebugSession", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
+    {"VisionSpeedLimitLastEvent", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
+    {"VisionSpeedLimitStatus", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
+    {"VisionSpeedLimitStream", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
+    {"VisionSpeedLimitSupportCount", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, INT, "0"}},
+    {"VisionSpeedLimitSupportSpeed", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, FLOAT, "0.0"}},
+    {"VisionSpeedLimitTrainingCollector", {PERSISTENT, BOOL, "1"}},  // capture training candidates by default
+
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -340,6 +380,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EnforceTorqueControl", {PERSISTENT | BACKUP, BOOL}},
     {"LateralJerkTorqueController", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LateralCurveCuttingCorrection", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"LaneCentering", {PERSISTENT | BACKUP, BOOL, "0"}},  // FLM requires this to be off while analyzing
     {"LateralLaneCentering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LiveTorqueParamsToggle", {PERSISTENT | BACKUP , BOOL}},
     {"LiveTorqueParamsRelaxedToggle", {PERSISTENT | BACKUP , BOOL}},
@@ -348,6 +389,33 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
+    {"CustomKp", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
+    {"VehicleTunesEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"FlmRuntimeOverridesEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // FLM runtime injection: apply the friction curve / vehicle knobs from FLMActiveOverrides to the torque controller
+    {"LongitudinalFollowingProfileEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot speed-dependent following profiles: interpolate the follow time over speed instead of using one number per personality
+    {"LongitudinalFollowingProfile", {PERSISTENT | BACKUP, STRING}},  // JSON document: {aggressive|standard|relaxed: {preset, curve}} for LongitudinalFollowingProfileEnabled
+    {"WeatherOffsetsEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 1, SETTINGS_SIMPLE}},  // StarPilot weather adaptation: lengthen the follow time, widen the stopped gap and lower the accel/lateral-accel ceilings in bad weather
+    {"WeatherAutoDetect", {PERSISTENT | BACKUP, BOOL, "1", std::nullopt, 1, SETTINGS_SIMPLE}},  // ask Open-Meteo for the current conditions instead of trusting a hand-written WeatherState
+    {"WeatherState", {PERSISTENT | BACKUP, STRING, "clear", std::nullopt, 0, SETTINGS_SIMPLE}},  // clear | rain | rain_storm | snow | low_visibility - written by carrot_server when WeatherAutoDetect is on
+    {"WeatherIncreaseFollowing", {PERSISTENT | BACKUP, FLOAT, "0.0", std::nullopt, 2, SETTINGS_ADVANCED}},  // seconds added to the follow time (0..3)
+    {"WeatherIncreaseStoppedDistance", {PERSISTENT | BACKUP, FLOAT, "0.0", std::nullopt, 2, SETTINGS_ADVANCED}},  // meters added to the stopped gap (0..20)
+    {"WeatherReduceAcceleration", {PERSISTENT | BACKUP, FLOAT, "0.0", std::nullopt, 2, SETTINGS_ADVANCED}},  // fraction by which the acceleration ceiling is reduced (0..1)
+    {"WeatherReduceLateralAcceleration", {PERSISTENT | BACKUP, FLOAT, "0.0", std::nullopt, 2, SETTINGS_ADVANCED}},  // fraction by which the lateral-acceleration ceiling is reduced (0..1)
+    {"LeadFollowPolicyEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"LeadStopDepartPolicyEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot stop/depart policy: vision approach caps, close-stop hold floors, standstill lead depart
+    {"UncertaintyPanicBypassEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot model-uncertainty panic bypass: entropy+brake-risk gate bypasses comfort smoothing when closing on a lead
+    {"LeadDuplicateGuardEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot duplicate-lead guard: near-duplicate source hysteresis, identical-radar-track hold, duplicate-vision comfort smoothing
+    {"ModelLeadTrajectoryEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot model lead trajectory: future-delta comfort path over raw anchor + enhanced planner-FCW gate
+    {"StoppingReleaseHysteresisEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot stopping-release hysteresis: sustained release request leaves stopping even with stock ACC standstill latched
+    {"NegativeTargetCreepGuardEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot negative-target creep guard: bleed stale positive integrator and cap positive output on real decel
+    {"CscCurvatureLearningEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot curve-speed self-learning: learns comfort lateral accel per curvature from the driver's manual driving
+    {"CurvatureLearningData", {PERSISTENT | BACKUP, STRING}},  // JSON bucket data for CscCurvatureLearningEnabled
+    {"NNFFMode", {PERSISTENT | BACKUP, INT, "0"}},  // StarPilot NNFF lateral control: 0=off, 1=lite (jerk friction), 2=full NN feedforward
+    {"LaneCenteringEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // StarPilot vision lane-centering: bounded curvature correction toward the lane center (not for use with LateralLaneCentering)
+    {"LaneCenterOffset", {PERSISTENT | BACKUP, FLOAT, "0"}},  // Lane centering lateral offset in meters (-0.3..0.3)
+    {"LaneCenteringE2EAuthority", {PERSISTENT | BACKUP, BOOL, "0"}},  // Attenuate lane-centering correction on large deliberate path errors unless near a boundary
+    {"WebPushVapidKeys", {PERSISTENT | BACKUP, STRING}},
+    {"WebPushSubscriptions", {PERSISTENT | BACKUP, STRING}},
     // Ensures steer-to-zero Mazda torque defaults are seeded once.
     {"MazdaTorqueDefaultsApplied", {PERSISTENT | BACKUP, BOOL}},
     // Tune version last seeded for the steer-to-zero Mazda EPS; a bump re-seeds everyone once.
@@ -391,7 +459,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OsmMapDataEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     // Parse 7706 UDP blind-spot / LiDAR / extBlinker fields (AmapNaviServ).
     {"CarrotAmapBlindSpotEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"CarrotEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // Tuning metadata, read back through Params.get_tuning_level /
+    // get_settings_tier. tuning_level: 0 = not a knob, 1 = everyday,
+    // 2 = behaviour you should understand first, 3 = expert. settings_tier
+    // decides whether a settings page shows it without searching. Declaring
+    // it here is what lets the catalog group these knobs from one source
+    // instead of a hand-maintained list that drifts. The stock value is left
+    // at std::nullopt: these switches do not exist on any car, so their
+    // registered default already is the value to fall back to.
+    {"CarrotEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 1, SETTINGS_SIMPLE}},
     // Behaviour switch for the 7714 WebSocket v2 navi stream. When off, card.py
     // consumes only the 7706 navLaneGuide path and ignores the v2 lane data.
     // NOT a process gate: carrot_navi is always_run (mirrors CarrotPilot) so the
@@ -465,7 +541,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarrotNaviCameraState", {CLEAR_ON_MANAGER_START, STRING, ""}},  // 7714 v2 camera mode/level/tilt/bearing
     {"CarrotNaviCompositionState", {CLEAR_ON_MANAGER_START, STRING, ""}},  // 7714 v2 UI composition active panels
     {"TrafficLightDetectMode", {PERSISTENT | BACKUP, INT, "2"}},  // 0=off, 1=red-stop-only, 2=stop&go (cp default)  // 0=off,1=red stop,2=red stop + green go
-    {"CarrotNavCruiseSpeedEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"CarrotNavCruiseSpeedEnabled", {PERSISTENT | BACKUP, BOOL, "1", std::nullopt, 1, SETTINGS_SIMPLE}},
     {"CarrotWebEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     // Opt-in support terminal on 6999 (CarrotPilot's recovery/server.py). It serves an
     // unauthenticated login shell and git-recovery actions to anyone who can reach the port,
@@ -473,8 +549,28 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // server's own startup check read it.
     {"CarrotRecoveryEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     // Unified control killswitches (carrot > Amap > OSM arbitration). Default off/safe.
-    {"CarrotLongitudinalSourceEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // enable CarrotPlanner as a LongitudinalPlanSP source
-    {"CarrotTrafficLightFusionEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // fuse carrot / Amap / vision traffic lights
+    {"CarrotLongitudinalSourceEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},  // enable CarrotPlanner as a LongitudinalPlanSP source
+    {"CarrotTrafficLightFusionEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},  // fuse carrot / Amap / vision traffic lights
+    {"SignalAssistMode", {PERSISTENT, INT, "0"}},  // 0 off, 1 red-light shadow only, 2 prepare/start control (experimental)
+    {"CarrotTurnAccelEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},  // cap positive accel by future model curvature in turns
+    {"CarrotCutinPredecelEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},  // bounded pre-decel for strong early corner-radar cut-in risk
+    {"CarrotLeadPreviewEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},  // early-decel preview from radar lead deceleration
+    // Display-only overlays. Neither one is read anywhere on the control path.
+    {"CarrotRadarPointsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // draw measured front-radar points in the road view
+    {"CarrotSignalHudEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // draw the neural signal evidence ring (needs SignalAssistMode > 0)
+    {"LeadBrakeLights", {PERSISTENT, BOOL, "0"}},  // display/log a lead brake-lamp candidate; display+log only, never a control input (needs SignalAssistMode > 0)
+    {"CarrotArs510Enabled", {PERSISTENT | BACKUP, BOOL, "0"}},  // opt-in ARS510 receive path for radar-DBC-less Toyota cars (RAV4 TSS2 2022/2023)
+    // Carrot longitudinal follow refinements, ported from CarrotPilot. All default
+    // off so the stock ACC path is unchanged until each one is validated on road.
+    {"CarrotStoppingLeadEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},   // require range evidence before a stopped lead counts as departing
+    {"CarrotCruiseCoastingEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}}, // release cruise overspeed brake within a bounded margin
+    {"CarrotCruiseCoastingPercent", {PERSISTENT | BACKUP, INT, "10", std::nullopt, 3, SETTINGS_ADVANCED}}, // coasting margin, 0-10 (percent); only read when the toggle is on
+    {"CarrotBrakingGapEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},     // comfort reserve against the lead braking path
+    {"CarrotGapRecoveryEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},    // recover the cruise gap after a lead pulls away
+    {"CarrotRadarOnlyWarningEnabled", {PERSISTENT | BACKUP, BOOL, "0"}}, // advisory alert for a measured obstacle with no selected lead
+    {"CarrotLateralReadinessEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 3, SETTINGS_ADVANCED}}, // block startup steering until lateral inputs and CAN are ready
+    {"CarrotFastRadarEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 3, SETTINGS_ADVANCED}},      // refresh a selected lead's kinematics from newer liveTracks (Hyundai only)
+    {"CarrotCutoutReliefEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},   // ease future following demand for a confirmed lead cut-out
     {"TrafficLightNavCautionOnly", {PERSISTENT | BACKUP, BOOL, "1"}},       // fused red light only warns; set 0 to allow stop assist
     {"DesireArbiterEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},             // lateral lane-change/fork desire from nav
     // Let carrot ATC (auto turn control) synthesise a turn signal from the phone's
@@ -484,13 +580,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // -> controlsd CC.left/rightBlinker -> the car's own turn-signal CAN message. That is
     // a navigation intent becoming a vehicle actuation, so it has to be an explicit
     // choice rather than the default.
-    {"CarrotAtcBlinkerEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"CarrotSourceTimeoutMs", {PERSISTENT | BACKUP, INT, "2000"}},          // carrot packet timeout [ms]
-    {"CarrotTrafficCongestionEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},   // fold phone TMC congestion into SmartCruiseControlMap (only lowers the target)
+    {"CarrotAtcBlinkerEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 1, SETTINGS_SIMPLE}},
+    {"CarrotSourceTimeoutMs", {PERSISTENT | BACKUP, INT, "2000", std::nullopt, 3, SETTINGS_ADVANCED}},          // carrot packet timeout [ms]
+    {"CarrotTrafficCongestionEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 1, SETTINGS_SIMPLE}},   // fold phone TMC congestion into SmartCruiseControlMap (only lowers the target)
     // Carrot navigation deceleration for a point ahead: ATC turn speed, the curve
     // speed table, and the route-curvature speed. Folds into SmartCruiseControlMap
     // (which must ALSO be on for it to actuate, same as the congestion cap).
-    {"CarrotMapDecelEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"CarrotMapDecelEnabled", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 2, SETTINGS_ADVANCED}},
     // One-shot: the first time Carrot navigation is enabled, its map-deceleration
     // sub-features (congestion / map-decel / Amap curve) are seeded ON so the user
     // does not have to find three more switches. Each stays independently offable
@@ -635,7 +731,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"JLeadFactor3", {PERSISTENT | BACKUP, FLOAT, "0"}},
     {"CruiseEcoControl", {PERSISTENT | BACKUP, INT, "2"}},
     {"MyDrivingModeAuto", {PERSISTENT | BACKUP, INT, "0"}},
-    {"DynamicTFollowLC", {PERSISTENT | BACKUP, FLOAT, "100.0"}},
+    // Integer percent, like TFollowGap*: the consumer divides by 100. It was
+    // declared FLOAT, which made the settings row unable to save - an int
+    // control writing into a FLOAT key raises TypeMismatch, and the only control
+    // that does write a float (use_float_scaling) divides by 100 first, so the
+    // value it stores is 1.00 where the consumer expects 100.
+    {"DynamicTFollowLC", {PERSISTENT | BACKUP, INT, "100"}},
     // Carrot longitudinal / t_follow tuning surface (webui exposure, mirrors config.py).
     {"LeadAccelResponse", {PERSISTENT | BACKUP, INT, "0"}},
     {"LongActuatorDelay", {PERSISTENT | BACKUP, INT, "20"}},
@@ -666,7 +767,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OnnxBsdIntervalMs", {PERSISTENT | BACKUP, INT, "250"}},
     {"OnnxBsdSmoothingMs", {PERSISTENT | BACKUP, INT, "200"}},
     {"OnnxBsdThreshold", {PERSISTENT | BACKUP, INT, "45"}},
-    {"UseLaneLineCurveSpeed", {PERSISTENT | BACKUP, INT, "0"}},
+    {"UseAutoSteerDelay", {PERSISTENT | BACKUP, BOOL, "1"}},  // FLM: derive steer delay from CP instead of the manual knob
+    {"UseLaneLineCurveSpeed", {PERSISTENT | BACKUP, INT, "0", std::nullopt, 2, SETTINGS_ADVANCED}},
     // Carrot steering / lateral tuning surface.
     {"AlwaysLateral", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CustomSR", {PERSISTENT | BACKUP, INT, "0"}},
@@ -683,19 +785,22 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LateralTorqueKpV", {PERSISTENT | BACKUP, INT, "100"}},
     {"PathOffset", {PERSISTENT | BACKUP, INT, "0"}},
     {"SteerActuatorDelay", {PERSISTENT | BACKUP, INT, "30"}},
-    {"SteerRatioRate", {PERSISTENT | BACKUP, INT, "100"}},
-    // Stock values: what the car shipped with, so Safe Mode can put a knob
-    // back without guessing. 0.0 means "not known", which makes Safe Mode
-    // leave the parameter alone rather than write a wrong number.
-    {"SteerDelayStock", {PERSISTENT, FLOAT, "0.0"}},
-    {"SteerFrictionStock", {PERSISTENT, FLOAT, "0.0"}},
-    {"SteerKPStock", {PERSISTENT, FLOAT, "0.0"}},
-    {"SteerLatAccelStock", {PERSISTENT, FLOAT, "0.0"}},
-    {"SteerRatioStock", {PERSISTENT, FLOAT, "0.0"}},
+    {"SteerDelay", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // FLM advanced lateral knobs
+    {"SteerFriction", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"SteerKP", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"SteerLatAccel", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"SteerRatio", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"SteerRatioRate", {PERSISTENT | BACKUP, INT, "100", std::nullopt, 3, SETTINGS_ADVANCED}},
     // Safe Mode: force the driving-related knobs back to a conservative
-    // baseline and remember what they were so it can be undone.
+    // baseline and remember what they were so it can be undone. The stock
+    // value a knob returns to is not a separate key: getKeyStockValue falls
+    // back to the registered default, and the steer knobs are removed rather
+    // than written so every consumer sees its own stock fallback.
     {"SafeMode", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SafeModeBackup", {PERSISTENT, JSON}},
+    // Comfort relaxation of a sudden speed-limit drop while a stable lead is
+    // followed. Default off: the veto list is the safety boundary.
+    {"SlcLeadDropRelaxationEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     // Carrot vehicle / CAN / buttons tuning surface.
     {"AutoGasSyncSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CancelButtonMode", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -733,7 +838,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RadarTrackFlip", {PERSISTENT, BOOL, "0"}},  // invert frontRadar yRel/yvRel once per drive
     {"EnableRadarTracksResult", {PERSISTENT | CLEAR_ON_MANAGER_START, INT}},
     {"EnableSpeedTF", {PERSISTENT | BACKUP, INT, "0"}},
-    {"HotspotOnBoot", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"HotspotOnBoot", {PERSISTENT | BACKUP, BOOL, "0", std::nullopt, 1, SETTINGS_SIMPLE}},
     {"LatMpcInputOffset", {PERSISTENT | BACKUP, INT, "4"}},
     {"LatSmoothSec", {PERSISTENT | BACKUP, INT, "13"}},
     {"LateralTorqueAccelFactor", {PERSISTENT | BACKUP, INT, "2500"}},
@@ -758,7 +863,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ShowPathMode", {PERSISTENT | BACKUP, INT, "9"}},
     {"ShowPathModeLane", {PERSISTENT | BACKUP, INT, "11"}},
     {"ShowPlotMode", {PERSISTENT | BACKUP, INT, "0"}},
-    {"ShowRadarInfo", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // A 0-3 level, not a switch: 0 = off, 1 = speed only, 2 = speed + distance, 3 = every
+    // measured point. Declared BOOL until now, which made the level >1 writes in ui_state
+    // and the settings page fail the store's type check; every reader already used get_int.
+    {"ShowRadarInfo", {PERSISTENT | BACKUP, INT, "0", std::nullopt, 1, SETTINGS_SIMPLE}},
     {"ShowRouteInfo", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowTpms", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"SoftwareMenu", {PERSISTENT | BACKUP, BOOL, "0"}},

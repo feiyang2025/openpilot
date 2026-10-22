@@ -62,11 +62,63 @@ def carrot_defaults() -> dict:
   return _defaults()
 
 
+def _metadata_params():
+  """A raw Params handle for the metadata reads, or None when unavailable.
+
+  Raw rather than ``UnifiedParams``: the tuning metadata lives in the compiled
+  key table, not in any of the JSON tables ``UnifiedParams`` merges, so the
+  wrapper would only add a cache between the question and the answer.
+  """
+  try:
+    from openpilot.common.params import Params
+    return Params()
+  except Exception:
+    return None
+
+
+def _declared_metadata(names, params=None) -> tuple[dict[str, int], dict[str, int]]:
+  """`(tuning_level, settings_tier)` per key, as declared in params_keys.h.
+
+  This is the consumer that keeps the metadata from being write-only: the app
+  groups and orders its knobs from these two numbers instead of from a list
+  somebody has to remember to update. A device whose libparams_c.so predates
+  the metadata reports nothing, and every key falls back to "not a knob,
+  advanced" - the pre-metadata behaviour.
+
+  ``params`` is injectable so the fallbacks can be tested without a store.
+  """
+  levels: dict[str, int] = {}
+  tiers: dict[str, int] = {}
+  if params is None:
+    params = _metadata_params()
+  if params is None:
+    return levels, tiers
+
+  from openpilot.sunnypilot.common.param_read import read_settings_tier, read_tuning_level
+
+  for name in names:
+    level = read_tuning_level(params, name, 0)
+    if level:
+      levels[name] = level
+    tiers[name] = read_settings_tier(params, name, 1)
+  return levels, tiers
+
+
 def carrot_catalog() -> dict:
   """`{groups, items_by_group, by_name}` - the shape the app renders."""
   defaults = _defaults()
+  levels, tiers = _declared_metadata(defaults)
   by_name = {
-    name: {"name": name, "default": default, "type": _type_of(default), "group": _group_for(name)}
+    name: {
+      "name": name,
+      "default": default,
+      "type": _type_of(default),
+      "group": _group_for(name),
+      # Declared in params_keys.h, not inferred from the name here. 0 means
+      # "not a tuning knob", which is what an unregistered key reads as.
+      "tuningLevel": levels.get(name, 0),
+      "settingsTier": tiers.get(name, 1),
+    }
     for name, default in defaults.items()
   }
   items_by_group: dict = {}
