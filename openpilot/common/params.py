@@ -69,6 +69,9 @@ params_clear_all = _bind("params_clear_all", [ParamsHandle, ctypes.c_uint])
 params_check_key = _bind("params_check_key", [ParamsHandle, ctypes.c_char_p], ctypes.c_bool)
 params_get_key_type = _bind("params_get_key_type", [ParamsHandle, ctypes.c_char_p], ctypes.c_int)
 params_get_default = _bind("params_get_default", [ParamsHandle, ctypes.c_char_p], ParamsBuffer)
+params_get_stock = _bind("params_get_stock", [ParamsHandle, ctypes.c_char_p], ParamsBuffer)
+params_get_tuning_level = _bind("params_get_tuning_level", [ParamsHandle, ctypes.c_char_p], ctypes.c_int)
+params_get_settings_tier = _bind("params_get_settings_tier", [ParamsHandle, ctypes.c_char_p], ctypes.c_int)
 params_get = _bind("params_get", [ParamsHandle, ctypes.c_char_p, ctypes.c_bool], ParamsBuffer)
 params_get_bool = _bind("params_get_bool", [ParamsHandle, ctypes.c_char_p, ctypes.c_bool], ctypes.c_bool)
 params_put = _bind("params_put", [ParamsHandle, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_bool], ctypes.c_int)
@@ -225,6 +228,22 @@ class Params:
 
   def get_type(self, key):
     return ParamKeyType(params_get_key_type(self.p, self.check_key(key)))
+
+  def get_stock_value(self, key):
+    """The value the car shipped with, or the registered default.
+
+    Unlike get(key, return_default=True), this does not depend on whether the
+    parameter was ever written: it is a property of the key itself.
+    """
+    return _copy_string(params_get_stock(self.p, self.check_key(key)))
+
+  def get_tuning_level(self, key):
+    """Which tuning level the key belongs to; 0 means it is not a knob."""
+    return params_get_tuning_level(self.p, self.check_key(key))
+
+  def get_settings_tier(self, key):
+    """Where the key belongs in the settings page (0 simple, 1 advanced)."""
+    return params_get_settings_tier(self.p, self.check_key(key))
 
   def all_keys(self, flag=ParamKeyFlag.ALL):
     if flag == ParamKeyFlag.ALL:

@@ -22,6 +22,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.sunnypilot.selfdrive.controls.lib.stopping_controller import StoppingController
+from openpilot.sunnypilot.common.safe_mode_runtime import enforce_safe_mode
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
@@ -279,8 +280,14 @@ class Controls(ControlsExt):
 
   def run(self):
     rk = Ratekeeper(100, print_delay_threshold=None)
+    frame = 0
     while True:
       self.update()
+      # Safe Mode re-forces its managed knobs on a slow cadence, because the
+      # settings UI and other daemons can write the same keys. It is a no-op
+      # when the switch is off.
+      enforce_safe_mode(self.params, frame)
+      frame += 1
       CC, lac_log = self.state_control()
       self.publish(CC, lac_log)
       self.get_params_sp(self.sm)
