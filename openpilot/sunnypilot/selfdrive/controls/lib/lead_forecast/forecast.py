@@ -160,8 +160,11 @@ class LeadForecast:
     forwarded verbatim and only `lead_index` is read out of them.
     """
     # zoompilot's MPC picked the lead by call order and passed nothing; this
-    # fork says which lead it is. Accept both.
-    lead_index = kwargs.get("lead_index", args[0] if args else None)
+    # fork may say which lead it is. Only an integer first positional is an
+    # index: this tree's MPC is older and passes the lead itself there.
+    lead_index = kwargs.get("lead_index")
+    if lead_index is None and args and isinstance(args[0], int):
+      lead_index = args[0]
     i = self._calls if lead_index is None else int(lead_index)
     self._calls += 1
     lead_xv = self._upstream_process_lead(lead, *args, **kwargs)
