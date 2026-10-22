@@ -73,7 +73,7 @@ def result_fields(result, age_ms):
           'reason': result['reason'] if fresh else 'stale_result', 'control_permission': False}
 
 
-def run(directory=DIRECTORY, duration=None):
+def run(directory=DIRECTORY, duration=None, comparison_override=None):
   import fcntl
   directory = Path(directory)
   if not requested(directory) or not tracking_requested(directory):
@@ -87,7 +87,8 @@ def run(directory=DIRECTORY, duration=None):
     for name in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
       os.environ[name] = '1'
     import cv2
-    from tools.signal_analysis import signal_tracker  # noqa: TID251 - repository-root experiment, not openpilot/tools
+    from openpilot.common.repo_tools import load
+    signal_tracker = load('signal_analysis/signal_tracker.py')
     from msgq.visionipc import VisionIpcClient, VisionStreamType
     from openpilot.common.swaglog import cloudlog
     cv2.setNumThreads(1)
@@ -96,7 +97,7 @@ def run(directory=DIRECTORY, duration=None):
     source_sha = hashlib.sha256(Path(signal_tracker.__file__).read_bytes()).hexdigest()
     from openpilot.sunnypilot.carrot.signal_assist_runtime import publish_observation
     from openpilot.sunnypilot.carrot.signal_display import display_requested, publish_display
-    comparison = comparison_requested(directory)
+    comparison = comparison_requested(directory) if comparison_override is None else comparison_override
     revalidated = revalidated_requested(directory)
     def new_tracker():
       return (*new_trackers(signal_tracker.SignalTracker, comparison, revalidated), f'{os.getpid()}:{time.monotonic_ns()}')
@@ -109,7 +110,8 @@ def run(directory=DIRECTORY, duration=None):
                    assist_transport=not comparison, daytime_comparison=comparison, revalidated=revalidated)
     previous_id = None
     last_file = 0.
-    while (requested(directory) and tracking_requested(directory) and comparison_requested(directory) == comparison
+    while (requested(directory) and tracking_requested(directory)
+           and (comparison_override is not None or comparison_requested(directory) == comparison)
            and revalidated_requested(directory) == revalidated
            and (duration is None or time.monotonic() - start < duration)):
       if not client.is_connected() and not client.connect(False):

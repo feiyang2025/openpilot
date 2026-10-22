@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import pickle
 import shutil
 import struct
@@ -69,7 +70,31 @@ def _camera_mismatch(cam_w: int, cam_h: int, compiled: str, path) -> RuntimeErro
   have = f"{path} has only [{compiled or 'none'}]"
   return RuntimeError(f"no jit for this device's {cam_w}x{cam_h} driver camera: {have}. This build was compiled for another device")
 
+def dm_model_pkl_path():
+  """The DM pkl to load: a locally compiled per-device build when present.
+
+  The model committed by the Qualcomm tree captures NPY/CPU inputs, so on a
+  PC/Jetson it silently runs on CPU (~590 ms/frame measured). A pkl compiled on
+  this device (compile_dmonitoring.py) carries the device tag and runs on CUDA,
+  while the legacy name keeps working when no local build exists.
+  """
+  tagged = MODELS_DIR / f'dmonitoring_model_{tg_device_tag()}_tinygrad.pkl'
+  return tagged if tagged.is_file() else MODELS_DIR / 'dmonitoring_model_tinygrad.pkl'
+
+
+def tg_device_tag() -> str:
+  """Cheap device tag for artifact names; no tinygrad import on the caller's path."""
+  if os.path.exists('/dev/nvidiactl') or os.path.exists('/dev/nvidia0'):
+    return 'cuda'
+  if os.path.exists('/dev/kgsl-3d0'):
+    return 'qcom'
+  return 'cpu'
+
+
 def dm_warp_path(cam_w: int, cam_h: int):
+  tagged = MODELS_DIR / f'dm_warp_{cam_w}x{cam_h}_{tg_device_tag()}_tinygrad.pkl'
+  if tagged.is_file():
+    return tagged
   path = MODELS_DIR / f'dm_warp_{cam_w}x{cam_h}_tinygrad.pkl'
   if not path.is_file():
     compiled = ', '.join(sorted(p.name.split('_')[2] for p in MODELS_DIR.glob('dm_warp_*_tinygrad.pkl')))

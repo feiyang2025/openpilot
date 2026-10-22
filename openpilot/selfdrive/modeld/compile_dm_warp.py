@@ -16,8 +16,13 @@ def make_warp_dm(nv12: NV12Frame, dm_w, dm_h):
   stride_pad = stride - cam_w
 
   def warp_dm(input_frame, M_inv):
+    # The runtime frame is a plain NV12 blob in host memory (Tensor.from_blob,
+    # device='CPU'). Move it to the compute device here, inside the jit, so the
+    # captured input contract stays CPU while the warp itself runs on CUDA (or
+    # QCOM on comma hardware) instead of falling back to CPU.
+    src = input_frame.to(Device.DEFAULT)
     M_inv = M_inv.to(Device.DEFAULT).realize()
-    return warp_perspective_tinygrad(input_frame[:cam_h*stride], M_inv,
+    return warp_perspective_tinygrad(src[:cam_h*stride], M_inv,
                                      (dm_w, dm_h), (cam_h, cam_w), stride_pad, border_fill_val=16).reshape(-1, dm_h * dm_w) # Y
   return warp_dm
 
@@ -28,7 +33,9 @@ def compile_dm_warp(nv12: NV12Frame, dm_w, dm_h, pkl_path):
   warp_dm_jit = TinyJit(make_warp_dm(nv12, dm_w, dm_h), prune=True)
 
   for i in range(10):
-    frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8').realize()
+    # Capture the input on CPU: the runtime passes a host NV12 blob
+    # (Tensor.from_blob), and warp_dm copies it to the compute device.
+    frame = Tensor.randint(nv12.size, low=0, high=256, dtype='uint8', device='CPU').realize()
     M_inv = Tensor(Tensor.randn(3, 3).mul(8).realize().numpy(), device='NPY')
     Device.default.synchronize()
     st = time.perf_counter()

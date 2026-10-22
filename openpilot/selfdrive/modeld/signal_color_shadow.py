@@ -11,7 +11,20 @@ import os
 from pathlib import Path
 import time
 
-DIRECTORY = Path('/data/signal-color-shadow')
+def _default_directory() -> Path:
+  # Devices keep the historical /data location (tmpfs-backed, comma layout).
+  # A PC/Jetson bench does not own /data, so fall back to the params root.
+  legacy = Path('/data/signal-color-shadow')
+  try:
+    if os.access(legacy.parent, os.W_OK):
+      return legacy
+  except OSError:
+    pass
+  from openpilot.common.hardware.hw import Paths
+  return Path(Paths.config_root()) / 'signal-color-shadow'
+
+
+DIRECTORY = _default_directory()
 MODEL_SHA256 = 'c091fad2b08d9a59e0e061413ec62ec181a77f371791d6f78e6a5bd61b148d06'
 REFERENCE_SIZE = (1344, 760)
 CLASSES = ('background', 'red', 'green')
@@ -152,7 +165,10 @@ def configure_worker_scheduling():
 
 
 def run(directory=DIRECTORY, duration=None):
+  from openpilot.selfdrive.modeld.signal_neural_shadow import neural_requested, run as run_neural
   from openpilot.selfdrive.modeld.signal_tracking_shadow import tracking_requested, run as run_tracking
+  if neural_requested(directory):
+    return run_neural(directory, duration)
   if tracking_requested(directory):
     return run_tracking(directory, duration)
   import sys
@@ -169,7 +185,6 @@ def run(directory=DIRECTORY, duration=None):
     configure_worker_scheduling()
     for name in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
       os.environ[name] = '1'
-    sys.path.insert(0, '/data/signal-model-shadow/runtime')
     import onnxruntime as ort
     from msgq.visionipc import VisionIpcClient, VisionStreamType
     from openpilot.common.swaglog import cloudlog

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import os
-from openpilot.selfdrive.modeld.helpers import MODELS_DIR, dm_warp_path, get_tg_input_devices
+from openpilot.selfdrive.modeld.helpers import MODELS_DIR, dm_model_pkl_path, dm_warp_path, get_tg_input_devices
 from tinygrad.tensor import Tensor
 import time
 import pickle
@@ -20,7 +20,6 @@ from openpilot.selfdrive.modeld.parse_model_outputs import sigmoid, safe_exp
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.dmonitoringmodeld"
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
-MODEL_PKL_PATH = MODELS_DIR / 'dmonitoring_model_tinygrad.pkl'
 METADATA_PATH = MODELS_DIR / 'dmonitoring_model_metadata.pkl'
 
 
@@ -39,17 +38,26 @@ class ModelState:
       'calib': np.zeros(self.input_shapes['calib'], dtype=np.float32),
     }
 
+    model_pkl = dm_model_pkl_path()
+    # A locally compiled CUDA pkl captures its inputs on CUDA; the legacy
+    # Qualcomm/NPY pkl keeps the zero-copy NPY calib buffer. The blob itself
+    # stays in host memory and the warp moves it to the compute device.
+    self.model_dev = 'CUDA' if '_cuda_' in model_pkl.name else 'NPY'
+
     self.warp_inputs_np = {'transform': np.zeros((3,3), dtype=np.float32)}
     self.warp_inputs = {k: Tensor(v, device='NPY') for k,v in self.warp_inputs_np.items()}
     self.frame_buf_params = get_nv12_info(cam_w, cam_h)
-    self.tensor_inputs = {k: Tensor(v, device='NPY').realize() for k,v in self.numpy_inputs.items()}
+    self.tensor_inputs = {k: Tensor(v, device=self.model_dev).realize() for k,v in self.numpy_inputs.items()}
     self._blob_cache : dict[int, Tensor] = {}
-    self.model_run = pickle.load(open_file_chunked(str(MODEL_PKL_PATH)))
+    self.model_run = pickle.load(open_file_chunked(str(model_pkl)))
     with open(dm_warp_path(cam_w, cam_h), "rb") as f:
       self.image_warp = pickle.load(f)
 
   def run(self, buf: VisionBuf, calib: np.ndarray, transform: np.ndarray) -> tuple[np.ndarray, float]:
     self.numpy_inputs['calib'][0,:] = calib
+    if self.model_dev != 'NPY':
+      # CUDA tensors do not share the numpy buffer the way the NPY device does.
+      self.tensor_inputs['calib'].assign(self.numpy_inputs['calib']).realize()
 
     t1 = time.perf_counter()
 
