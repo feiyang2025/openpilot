@@ -345,7 +345,7 @@ class ModelState(ModelStateBase):
       desired_curvature = get_curvature_from_output(model_output, curvature_plan, v_ego, lat_action_t, self.mlsim)
     else:
       desired_accel = model_output['action'][0, 1]
-      desired_curvature = model_output['action'][0, 0] / (max(1.0, v_ego))**2
+      desired_curvature = model_output['action'][0, 0] / (max(2.5, v_ego))**2
 
     stop = v_ego < 0.3 and desired_accel < 0.1
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, self.LONG_SMOOTH_SECONDS)
